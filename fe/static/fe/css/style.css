@@ -1,0 +1,215 @@
+/* main color scheme configurable with var */
+:root {
+  --primary-color: #1db954;
+  --secondary-color: #1ed760;
+  --primary-hover: #1ed760;
+  --secondary-hover: #1ed760;
+  --bg-dark: #121212;
+  --bg-card: #181818;
+  --text-light: #ffffff;
+  --text-muted: #a7a7a7;
+  --border-color: #2e2e2e;
+}
+
+body {
+  background-color: var(--bg-dark);
+  color: var(--text-light);
+  font-family: Arial, sans-serif;
+}
+
+/* Spotify green theme */
+.text-spotify {
+  color: var(--primary-color);
+}
+
+/* Cards */
+.card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-light);
+}
+
+.card:hover {
+  background-color: #222;
+}
+
+/* Buttons */
+.btn-spotify {
+  background-color: var(--primary-color);
+  border-color: var(--secondary-color);
+  color: white;
+}
+
+.btn-spotify:hover {
+  background-color: var(--secondary-color);
+  border-color: var(--secondary-color);
+  color: white;
+}
+
+.btn-outline-spotify {
+  border: 1px solid var(--secondary-color);
+  color: var(--secondary-color);
+  background-color: transparent;
+}
+
+.btn-outline-spotify:hover {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+/* Forms */
+.form-control {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-light);
+}
+
+.form-control:focus {
+  background-color: var(--bg-card);
+  border-color: var(--primary-color);
+  color: var(--text-light);
+  box-shadow: 0 0 0 0.2rem rgba(29, 185, 84, 0.25);
+}
+
+.form-control::placeholder {
+  color: var(--text-muted);
+}
+
+.form-label {
+  color: var(--text-light);
+}
+
+/* Lists */
+.list-group-item {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-light);
+}
+
+.list-group-item:hover {
+  background-color: #222;
+}
+
+/* Navigation */
+.navbar {
+  background-color: #040404;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.navbar-brand {
+  color: var(--primary-color) !important;
+  font-weight: bold;
+}
+
+.navbar-nav .nav-link {
+  color: var(--text-muted) !important;
+}
+
+.navbar-nav .nav-link:hover,
+.navbar-nav .nav-link.active {
+  color: var(--text-light) !important;
+}
+
+/* Secondary text */
+.text-muted {
+  color: var(--text-muted) !important;
+}
+
+/* Badge */
+.badge.bg-spotify {
+  background-color: var(--primary-color) !important;
+}
+
+/* Progress bar */
+.progress-bar.bg-spotify {
+  background-color: var(--primary-color) !important;
+}
+
+/* Responsive button group for Spotify controls */
+@media (max-width: 768px) {
+  #currentlyPlayingSection .card-title .float-end {
+    float: none !important;
+    display: block !important;
+    margin-top: 0.5rem;
+  }
+
+  #playNextFromFNTBtn {
+    display: block !important;
+    width: 100% !important;
+    margin-bottom: 0.5rem !important;
+    margin-right: 0 !important;
+  }
+
+  #refreshCurrentlyPlayingBtn {
+    display: block !important;
+    width: 100% !important;
+  }
+}
+
+/* Mobile navbar toggle */
+.navbar-toggler {
+  border: none;
+}
+
+.navbar-collapse {
+  background-color: #040404;
+  border-radius: 8px;
+  margin-top: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+}
+
+/* drag and drop styles */
+.playlist-item:hover,
+.vibe-item:hover {
+  background-color: #222;
+}
+
+.playlist-item {
+  transition: all 0.2s ease;
+  cursor: default;
+}
+
+.playlist-item[draggable="true"] {
+  user-select: none;
+}
+
+.playlist-item.dragging {
+  opacity: 0.5;
+  transform: scale(0.95);
+}
+
+.playlist-item.drag-over {
+  border-top: 2px solid var(--primary-color) !important;
+  background-color: rgba(29, 185, 84, 0.1);
+}
+
+.drag-handle {
+  cursor: grab;
+  opacity: 0.7;
+  padding: 0.25rem;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.drag-handle:hover {
+  opacity: 1;
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+/* Custom remove button with inverted hover effect */
+.btn-remove {
+  background-color: #6c757d;
+  border: 1px solid #6c757d;
+  color: white;
+}
+
+.btn-remove:hover {
+  background-color: transparent;
+  border-color: #6c757d;
+  color: #6c757d;
+}
