@@ -132,3 +132,11 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+
+
+# Spotify Configs
+SPOTIFY_CLIENT_ID = "4d865c77ba8f41319705599759db5d25"
+SPOTIFY_CLIENT_SECRET = "f8e1f6e1e1794602871494c6d7936418" 
+SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8000/spotify/callback/"

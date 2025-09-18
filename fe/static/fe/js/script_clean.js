@@ -194,7 +194,6 @@ function updateNavigation(activePage) {
     bsCollapse.hide();
   }
 }
-
 function navigate(newPage) {
   // hide all
   document.querySelectorAll(".content-section").forEach((section) => {
@@ -211,6 +210,16 @@ function navigate(newPage) {
   }
   if (newPage === "myvibe-section") {
     loadVibe();
+  }
+  if (newPage === "spotify-section") {
+    // Only check connection if we think user might be connected
+    // This avoids 401 errors when user hasn't connected yet
+    if (spotifyConnected) {
+      checkSpotifyConnection();
+    } else {
+      // User hasn't connected yet, just ensure button shows disconnected state
+      updateSpotifyButtonState("disconnected");
+    }
   }
 
   // navbar state
@@ -1018,5 +1027,142 @@ function showResults(data, artistName) {
     resultsDiv.innerHTML = html;
   } else {
     resultsDiv.innerHTML = `<div class="alert alert-info">No recommendations found for ${artistName}</div>`;
+  }
+}
+
+// PLAY NEXT FROM FNT FUNCTIONALITY
+
+// Get the first song from user's playlist
+async function getFirstPlaylistSong() {
+  if (!currentSessionId) {
+    throw new Error("No active session. Please create a session first.");
+  }
+
+  try {
+    const response = await fetch(
+      `/api/get-songs/?session_id=${currentSessionId}&list_type=playlist`
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const songs = data.songs;
+
+    if (!songs || songs.length === 0) {
+      throw new Error(
+        "Your playlist is empty. Add some songs to your playlist first."
+      );
+    }
+
+    // Find the song with playlist_sequence = 1 (or the first song if no explicit sequence)
+    const firstSong =
+      songs.find((song) => song.playlist_sequence === 1) || songs[0];
+
+    return {
+      title: firstSong.song_title,
+      artist: firstSong.artist_name,
+      id: firstSong.id,
+    };
+  } catch (error) {
+    console.error("Error getting first playlist song:", error);
+    throw error;
+  }
+}
+
+// Main function to play next song from FNT playlist
+async function playNextFromFNT() {
+  const button = document.getElementById("playNextFromFNTBtn");
+  const originalHTML = button.innerHTML;
+
+  // Show loading state
+  button.disabled = true;
+  button.innerHTML =
+    '<i class="fas fa-spinner fa-spin me-1"></i>Finding song...';
+
+  try {
+    // Step 1: Get the first song from playlist
+    const firstSong = await getFirstPlaylistSong();
+
+    button.innerHTML =
+      '<i class="fas fa-spinner fa-spin me-1"></i>Searching Spotify...';
+
+    // Step 2: Search for the song on Spotify
+    const spotifyTrack = await searchSpotifyForSong(
+      firstSong.title,
+      firstSong.artist
+    );
+
+    button.innerHTML =
+      '<i class="fas fa-spinner fa-spin me-1"></i>Playing song...';
+
+    // Step 3: Play the song on Spotify
+    await playSpotifyTrack(spotifyTrack.uri);
+
+    // Step 4: Show success message and update currently playing
+    const statusDiv = document.getElementById("spotifyStatus");
+    if (statusDiv) {
+      const successMessage = document.createElement("div");
+      successMessage.className = "alert alert-success mt-2";
+      successMessage.innerHTML = `
+        <h6><i class="fas fa-check-circle me-2"></i>Now Playing from FNT!</h6>
+        <p class="mb-0">
+          <strong>${spotifyTrack.name}</strong> by ${spotifyTrack.artists}
+        </p>
+      `;
+
+      // Remove any existing success messages
+      const existingMessages = statusDiv.querySelectorAll(".alert-success");
+      existingMessages.forEach((msg) => {
+        if (msg.innerHTML.includes("Now Playing from FNT!")) {
+          msg.remove();
+        }
+      });
+
+      statusDiv.appendChild(successMessage);
+
+      // Remove the message after 5 seconds
+      setTimeout(() => {
+        successMessage.remove();
+      }, 5000);
+    }
+
+    // Refresh currently playing info after a brief delay
+    setTimeout(() => {
+      refreshCurrentlyPlaying();
+    }, 2000);
+  } catch (error) {
+    console.error("Error playing next from FNT:", error);
+
+    // Show error message
+    const statusDiv = document.getElementById("spotifyStatus");
+    if (statusDiv) {
+      const errorMessage = document.createElement("div");
+      errorMessage.className = "alert alert-danger mt-2";
+      errorMessage.innerHTML = `
+        <h6><i class="fas fa-exclamation-circle me-2"></i>Could not play from FNT</h6>
+        <p class="mb-0">${error.message}</p>
+      `;
+
+      // Remove any existing error messages
+      const existingMessages = statusDiv.querySelectorAll(".alert-danger");
+      existingMessages.forEach((msg) => {
+        if (msg.innerHTML.includes("Could not play from FNT")) {
+          msg.remove();
+        }
+      });
+
+      statusDiv.appendChild(errorMessage);
+
+      // Remove the error message after 8 seconds
+      setTimeout(() => {
+        errorMessage.remove();
+      }, 8000);
+    }
+  } finally {
+    // Restore button state
+    button.disabled = false;
+    button.innerHTML = originalHTML;
   }
 }
