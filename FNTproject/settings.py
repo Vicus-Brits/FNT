@@ -1,13 +1,14 @@
 from pathlib import Path
+from decouple import config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-g--p@tmd&b5%4-5_4qjuz1fqyxkndk+$5ppx!5&l@bdd_u^p2v'
+SECRET_KEY = config('DJANGO_SECRET_KEY', default='django-insecure-change-this-key')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=True, cast=bool)
 
 ALLOWED_HOSTS = []
 
@@ -137,6 +138,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # Spotify Configs
-SPOTIFY_CLIENT_ID = "4d865c77ba8f41319705599759db5d25"
-SPOTIFY_CLIENT_SECRET = "f8e1f6e1e1794602871494c6d7936418" 
-SPOTIFY_REDIRECT_URI = "http://127.0.0.1:8000/spotify/callback/"
+SPOTIFY_CLIENT_ID = config('SPOTIFY_CLIENT_ID')
+SPOTIFY_CLIENT_SECRET = config('SPOTIFY_CLIENT_SECRET')
+SPOTIFY_REDIRECT_URI = config('SPOTIFY_REDIRECT_URI', default='http://127.0.0.1:8000/spotify/callback/')

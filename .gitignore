@@ -3,3 +3,5 @@ db.sqlite3
 fnt-api.sqlite3
 FNT_FinalReport_September.docx
 FNT_FinalReport_September.pdf
+.env
+pycache/

@@ -123,30 +123,24 @@ def callSpotifyAPI(url, headers, empty204=None, method="GET", json_data=None):
 # SPOTIFY API ROOT  used to view URLS
 class SpotifyAPIRootView(APIView):
     def get(self, request, *args, **kwargs):
-        endpoints = {
-            "authentication": {
+        API = {
+         
                 "auth": request.build_absolute_uri("/spotify/auth/"),
                 "callback": request.build_absolute_uri("/spotify/callback/"),
                 "refresh": request.build_absolute_uri("/spotify/refresh/"),
-            },
-            "player_controls": {
                 "devices": request.build_absolute_uri("/spotify/devices/"),
                 "currently_playing": request.build_absolute_uri("/spotify/currently-playing/"),
                 "playback_state": request.build_absolute_uri("/spotify/playback-state/"),
                 "recent_tracks": request.build_absolute_uri("/spotify/recent-tracks/"),
                 "user_profile": request.build_absolute_uri("/spotify/user-profile/"),
-            },
-            "playback": {
                 "search_tracks": request.build_absolute_uri("/spotify/search-tracks/?q=query"),
                 "play_track": request.build_absolute_uri("/spotify/play-track/"),
                 "play": request.build_absolute_uri("/spotify/play/"),
                 "pause": request.build_absolute_uri("/spotify/pause/"),
                 "next": request.build_absolute_uri("/spotify/next/"),
-            }
         }
         return Response({
-            "message": "Spotify API - Available endpoints",
-            "endpoints": endpoints
+            "SPOTIFY-API": API
         })
 
 
