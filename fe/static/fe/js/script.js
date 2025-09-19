@@ -212,6 +212,10 @@ function navigate(newPage) {
   if (newPage === "myvibe-section") {
     loadVibe();
   }
+  if (newPage === "spotify-section") {
+    // Check connection status and show user info if connected
+    checkSpotifyConnection();
+  }
 
   // navbar state
   updateNavigation(newPage);
