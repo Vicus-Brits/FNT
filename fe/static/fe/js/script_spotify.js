@@ -27,10 +27,22 @@ function updateSpotifyButtonState(state) {
 // make Spotify requests, refresh token on failure
 async function makeSpotifyRequest(url, options = {}) {
   try {
+    // Add session_id to URL if not already present and we have a current session
+    if (currentSessionId && !url.includes("session_id=")) {
+      const separator = url.includes("?") ? "&" : "?";
+      url = `${url}${separator}session_id=${currentSessionId}`;
+    }
+
     const response = await fetch(url, options);
     // If 401 (unauthorized), refresh token
     if (response.status === 401) {
       console.log("Token expired");
+
+      if (!currentSessionId) {
+        console.log("No session ID for refresh");
+        return response;
+      }
+
       // refresh the token
       const refreshResponse = await fetch("/spotify/refresh/", {
         method: "POST",
@@ -38,11 +50,12 @@ async function makeSpotifyRequest(url, options = {}) {
           "Content-Type": "application/json",
           "X-CSRFToken": getCSRFToken(),
         },
+        body: JSON.stringify({ session_id: currentSessionId }),
       });
 
       if (refreshResponse.ok) {
         console.log("Token refreshed");
-        // Retry  request
+        // Retry original request
         const retryResponse = await fetch(url, options);
         return retryResponse;
       } else {
@@ -69,14 +82,22 @@ async function startSpotifyAuth() {
     const statusDiv = document.getElementById("spotifyStatus");
     showSpinner(statusDiv, "Redirecting to Spotify...");
 
-    //Spotify authorization URL
-    const response = await fetch("/spotify/auth/?format=json", {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-    });
+    // Check if we have a session
+    if (!currentSessionId) {
+      throw new Error("No active session. Please create a session first.");
+    }
+
+    //Spotify authorization URL with session_id
+    const response = await fetch(
+      `/spotify/auth/?format=json&session_id=${currentSessionId}`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
     if (!response.ok) {
       let errorData;
@@ -116,6 +137,11 @@ async function disconnectSpotify() {
     const statusDiv = document.getElementById("spotifyStatus");
     showSpinner(statusDiv, "Disconnecting from Spotify...");
 
+    // Check if we have a session
+    if (!currentSessionId) {
+      throw new Error("No active session");
+    }
+
     // clear tokens
     const response = await fetch("/spotify/disconnect/", {
       method: "POST",
@@ -123,6 +149,7 @@ async function disconnectSpotify() {
         "Content-Type": "application/json",
         "X-CSRFToken": getCSRFToken(),
       },
+      body: JSON.stringify({ session_id: currentSessionId }),
     });
 
     spotifyConnected = false;
@@ -452,15 +479,6 @@ async function displaySpotifyUserInfo() {
       const activeDevice = devices.devices.find((device) => device.is_active);
 
       if (activeDevice) {
-        const deviceIcon =
-          activeDevice.type === "Computer"
-            ? "fa-desktop"
-            : activeDevice.type === "Smartphone"
-            ? "fa-mobile-alt"
-            : activeDevice.type === "Speaker"
-            ? "fa-volume-up"
-            : "fa-music";
-
         userInfoHtml += `
           <div class="mb-2">
             <strong>Active Device:</strong> ${activeDevice.name}
@@ -497,13 +515,23 @@ async function displaySpotifyUserInfo() {
 // Check if user is already connected to Spotify (for page refresh)
 async function checkSpotifyConnection() {
   try {
-    const response = await fetch("/spotify/user-profile/", {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-    });
+    // Don't check connection if we don't have a session
+    if (!currentSessionId) {
+      spotifyConnected = false;
+      updateSpotifyButtonState("disconnected");
+      return false;
+    }
+
+    const response = await fetch(
+      `/spotify/user-profile/?session_id=${currentSessionId}`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
     if (response.ok) {
       // User is connected

@@ -9,7 +9,7 @@ from .views import (
     # Playlist/Vibe management views
     AddPlaylistVibeView, GetSongsView, OrderPlaylistView, OrderVibeView,
     RemoveListView, ClearVibeView, RecommendView, AddRecommendationsView,
-    AddSongView
+    AddSongView, ClearSessionSongsView
 )
 
 
@@ -19,6 +19,7 @@ class APIRootView(APIView):
         return Response({
                 "API": {
                     "start": "/api/sessions/start/ (POST)",
+                    "check": "/api/sessions/{id}/check/ (GET)",
                     "stop": "/api/sessions/{id}/stop/ (DELETE)",
                     "artists": "/api/artist-search-lfm/ (GET)",
                     "artist_songs": "/api/artist-search-song-lfm/ (GET)",
@@ -30,6 +31,7 @@ class APIRootView(APIView):
                     "order_vibe": "/api/order-vibe/ (POST)",
                     "remove_from_list": "/api/remove-list/ (POST)",
                     "clear_vibe": "/api/clear-vibe/ (POST)",
+                    "clear_session_songs": "/api/clear-session-songs/ (POST)",
                     "get": "/api/recommend/ (GET)",
                     "add": "/api/add-recommendations/ (POST)"
                 }
@@ -44,6 +46,7 @@ urlpatterns = [
     # Session management (ViewSet actions as individual endpoints)
     path('sessions/start/', SessionViewSet.as_view({'post': 'start_session'}), name='start_session'),
     path('sessions/<str:pk>/stop/', SessionViewSet.as_view({'delete': 'stop_session'}), name='stop_session'),
+    path('sessions/<str:pk>/check/', SessionViewSet.as_view({'get': 'check_session'}), name='check_session'),
     
     # Songs endpoint (placeholder for future CRUD)
     # path('songs/', SongViewSet.as_view(), name='songs'),
@@ -61,6 +64,7 @@ urlpatterns = [
     path('order-vibe/', OrderVibeView.as_view(), name='order_vibe'),
     path('remove-list/', RemoveListView.as_view(), name='remove_list'),
     path('clear-vibe/', ClearVibeView.as_view(), name='clear_vibe'),
+    path('clear-session-songs/', ClearSessionSongsView.as_view(), name='clear_session_songs'),
     
     # Recommendations
     path('recommend/', RecommendView.as_view(), name='recommend'),

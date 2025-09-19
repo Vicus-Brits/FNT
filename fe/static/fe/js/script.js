@@ -1,174 +1,234 @@
 // GLOBAL
 let currentSessionId = null;
 let currentPage = "home";
-let spotifyConnected = false; // Track Spotify connection status
+let spotifyConnected = false;
 
 // HELPERS
 function showSpinner(container, message) {
   container.innerHTML = `
     <div class="text-center py-3">
-      <div class="spinner-border text-primary" role="status"></div>
+      <div class="spinner-border" role="status"></div>
       <p class="mt-2">${message}</p>
     </div>
   `;
 }
 
-function showError(container, message) {
-  container.innerHTML = `<div class="alert alert-danger">${message}</div>`;
-}
-
-// Get CSRF token from cookies
 function getCSRFToken() {
   const cookies = document.cookie.split(";");
   for (let cookie of cookies) {
     const [name, value] = cookie.trim().split("=");
-    if (name === "csrftoken") {
-      return value;
-    }
+    if (name === "csrftoken") return value;
   }
   return "";
 }
 
 // SESSION MANAGEMENT
-// Update html
-function displaySessionId(sessionId) {
-  const sessionIdDiv = document.getElementById("sessionId");
-  const sessionDisplay = document.getElementById("sessionDisplay");
-  sessionIdDiv.innerHTML = `<strong>${sessionId}</strong>`;
-  sessionIdDiv.className = "alert alert-success";
-  sessionDisplay.style.display = "block";
+const SessionStates = {
+  NO_SESSION: "no-session",
+  CREATING: "creating",
+  ACTIVE: "active",
+};
+let sessionState = SessionStates.NO_SESSION;
 
+function updateSessionUI(state, sessionId = null) {
+  const sessionCreate = document.getElementById("sessionCreate");
+  const sessionActive = document.getElementById("sessionActive");
   const newSessionBtn = document.getElementById("newSessionBtn");
-  const clearSessionBtn = document.getElementById("clearSessionBtn");
-  newSessionBtn.style.display = "none";
-  clearSessionBtn.style.display = "inline-block";
+  const sessionBtnText = document.getElementById("sessionBtnText");
+  const sessionIdDisplay = document.getElementById("sessionId");
+
+  newSessionBtn.classList.remove("btn-loading");
+
+  if (state === SessionStates.NO_SESSION) {
+    sessionCreate.style.display = "block";
+    sessionActive.style.display = "none";
+    sessionBtnText.textContent = "New Session";
+    newSessionBtn.disabled = false;
+    updateNavigationAccess(false);
+  } else if (state === SessionStates.CREATING) {
+    sessionCreate.style.display = "block";
+    sessionActive.style.display = "none";
+    newSessionBtn.classList.add("btn-loading");
+    sessionBtnText.textContent = "Creating...";
+    newSessionBtn.disabled = true;
+  } else if (state === SessionStates.ACTIVE) {
+    sessionCreate.classList.add("session-fade-out");
+    setTimeout(() => {
+      sessionCreate.style.display = "none";
+      sessionCreate.classList.remove("session-fade-out");
+      sessionIdDisplay.textContent = sessionId;
+      sessionActive.style.display = "block";
+      sessionActive.classList.add("session-fade-in");
+      updateNavigationAccess(true);
+    }, 300);
+  }
+
+  sessionState = state;
 }
-// create session
+
+// if there is no session id, disable nav links (not best plan)
+function updateNavigationAccess(hasSession) {
+  const navLinks = document.querySelectorAll(
+    ".navbar-nav .nav-link:not(#nav-home)"
+  );
+  const sessionRequiredDiv = document.getElementById("sessionRequired");
+  navLinks.forEach((link) =>
+    hasSession
+      ? link.classList.remove("disabled")
+      : link.classList.add("disabled")
+  );
+  if (sessionRequiredDiv)
+    sessionRequiredDiv.style.display = hasSession ? "none" : "block";
+}
+
 async function createNewSession() {
-  const button = document.getElementById("newSessionBtn");
-  const statusDiv = document.getElementById("statusMessage");
-
-  button.disabled = true;
-  button.innerHTML = "Creating Session...";
-  statusDiv.innerHTML =
-    '<div class="spinner-border spinner-border-sm text-primary" role="status"></div> Creating new session...';
-
-  const response = await fetch("/api/sessions/start_session/", {
+  updateSessionUI(SessionStates.CREATING); // wait state
+  const response = await fetch("/api/sessions/start/", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-CSRFToken": getCSRFToken(),
     },
   });
-  console.log(response);
+
+  if (!response.ok) {
+    return updateSessionUI(SessionStates.NO_SESSION);
+  }
 
   const data = await response.json();
-  currentSessionId = data.session.session_id; // set global var
-  localStorage.setItem("fnt_session_id", currentSessionId); // set localStorage
-  displaySessionId(currentSessionId); // udate html
+  currentSessionId = data.session.session_id;
+  // TODO check if local storage still needed
+  localStorage.setItem(
+    "fnt_session_data",
+    JSON.stringify({ id: currentSessionId, created: Date.now() })
+  );
+  updateSessionUI(SessionStates.ACTIVE, currentSessionId);
 
-  statusDiv.innerHTML = "";
-  button.disabled = false;
-  button.innerHTML = "New Session";
-
-  navigate("search-section");
+  // Modal Pop Up  to guide user
+  const modal = new bootstrap.Modal(
+    document.getElementById("sessionCreatedModal")
+  );
+  modal.show();
 }
-// remove session
-function clearStoredSession() {
+
+// Helper: clear session data nav to home
+function clearLocal() {
+  localStorage.removeItem("fnt_session_data");
   localStorage.removeItem("fnt_session_id");
   currentSessionId = null;
-  displaySessionId(null);
-  document.getElementById("statusMessage").innerHTML = "";
-  // alert("Session cleared");
-  // fresh page to reset state
-  window.location.reload();
+  updateSessionUI(SessionStates.NO_SESSION);
+  navigate("home-section");
 }
 
-// NAVIGATION GETDATA
-// refactor to a single function
+// Clear stored session (local + server)
+async function clearStoredSession(id = currentSessionId) {
+  const statusDiv = document.getElementById("statusMessage");
+  // clear database
+  await fetch(
+    `/api/clear-session-songs/?session_id=${encodeURIComponent(id)}`,
+    {
+      method: "POST",
+    }
+  );
+  // delete session
+  await fetch(`/api/sessions/${encodeURIComponent(id)}/stop/`, {
+    method: "DELETE",
+  });
+  // clear localStorage
+  clearLocal();
+}
+
+async function restoreSession() {
+  const sessionDataStr = localStorage.getItem("fnt_session_data");
+  let sessionId = sessionDataStr
+    ? JSON.parse(sessionDataStr).id
+    : localStorage.getItem("fnt_session_id");
+  if (!sessionId) {
+    updateSessionUI(SessionStates.NO_SESSION);
+    return false;
+  }
+
+  const response = await fetch(`/api/sessions/${sessionId}/check/`, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCSRFToken(),
+    },
+  });
+
+  if (!response.ok) {
+    clearLocalSession();
+    updateSessionUI(SessionStates.NO_SESSION);
+    return false;
+  }
+  const data = await response.json();
+  if (!data.session.is_active) {
+    clearLocalSession();
+    updateSessionUI(SessionStates.NO_SESSION);
+    return false;
+  }
+
+  currentSessionId = sessionId;
+  if (!sessionDataStr) {
+    localStorage.setItem(
+      "fnt_session_data",
+      JSON.stringify({ id: sessionId, created: Date.now() })
+    );
+    localStorage.removeItem("fnt_session_id");
+  }
+  updateSessionUI(SessionStates.ACTIVE, currentSessionId);
+  return true;
+}
+
+function clearLocalSession() {
+  localStorage.removeItem("fnt_session_data");
+  localStorage.removeItem("fnt_session_id");
+  currentSessionId = null;
+}
+
+function displaySessionId(sessionId) {
+  updateSessionUI(
+    sessionId ? SessionStates.ACTIVE : SessionStates.NO_SESSION,
+    sessionId || undefined
+  );
+}
+
+// DATA LOADERS
 async function loadPlaylist() {
-  let session_id = currentSessionId;
-  let container = document.getElementById("playlistContent");
-
-  // Check if we have a session ID
-  if (!session_id) {
+  const container = document.getElementById("playlistContent");
+  if (!currentSessionId) {
     container.innerHTML =
-      '<div class="alert alert-warning">Please create a session first</div>';
+      '<div class="alert alert-warning">Please create a session first to view your playlist</div>';
     return;
   }
-
-  // placeholder
-  container.innerHTML =
-    '<div class="text-center py-3">' +
-    '<div class="spinner-border text-primary" role="status"></div>' +
-    '<p class="mt-2">Loading playlist...</p>' +
-    "</div>";
-
-  try {
-    let response = await fetch(
-      "/api/get-songs/?session_id=" + session_id + "&list_type=playlist"
-    );
-
-    if (!response.ok) {
-      throw new Error("HTTP " + response.status);
-    }
-
-    let data = await response.json();
-    displayPlaylist(data);
-  } catch (error) {
-    console.error("Error loading playlist:", error);
-    container.innerHTML =
-      '<div class="alert alert-danger">Failed to load playlist: ' +
-      error.message +
-      "</div>";
-  }
+  showSpinner(container, "Loading playlist...");
+  const response = await fetch(
+    `/api/get-songs/?session_id=${currentSessionId}&list_type=playlist`
+  );
+  const data = await response.json();
+  displayPlaylist(data);
 }
-async function loadVibe() {
-  let session_id = currentSessionId;
-  let container = document.getElementById("vibeContent");
 
-  // Check if we have a session ID
-  if (!session_id) {
+async function loadVibe() {
+  const container = document.getElementById("vibeContent");
+  if (!currentSessionId) {
     container.innerHTML =
-      '<div class="alert alert-warning">Please create a session first</div>';
+      '<div class="alert alert-warning">Please create a session first to view your vibe</div>';
     return;
   }
-
-  // placeholder
-  container.innerHTML =
-    '<div class="text-center py-3">' +
-    '<div class="spinner-border text-primary" role="status"></div>' +
-    '<p class="mt-2">Loading vibe...</p>' +
-    "</div>";
-
-  try {
-    let response = await fetch(
-      "/api/get-songs/?session_id=" + session_id + "&list_type=vibe"
-    );
-
-    if (!response.ok) {
-      throw new Error("HTTP " + response.status);
-    }
-
-    let data = await response.json();
-    displayVibe(data);
-  } catch (error) {
-    console.error("Error loading vibe:", error);
-    container.innerHTML =
-      '<div class="alert alert-danger">Failed to load vibe: ' +
-      error.message +
-      "</div>";
-  }
+  showSpinner(container, "Loading vibe...");
+  const response = await fetch(
+    `/api/get-songs/?session_id=${currentSessionId}&list_type=vibe`
+  );
+  const data = await response.json();
+  displayVibe(data);
 }
 
 // NAVIGATION
 function updateNavigation(activePage) {
-  // remove active from all
-  document.querySelectorAll(".navbar-nav .nav-link").forEach((link) => {
-    link.classList.remove("active");
-  });
-
-  // Map page names to navigation IDs
+  document
+    .querySelectorAll(".navbar-nav .nav-link")
+    .forEach((link) => link.classList.remove("active"));
   const pageNavMap = {
     "home-section": "nav-home",
     "search-section": "nav-search",
@@ -177,147 +237,95 @@ function updateNavigation(activePage) {
     "myvibe-section": "nav-myvibe",
     "spotify-section": "nav-spotify",
   };
-
-  // set active
   const navId = pageNavMap[activePage];
-  let activeNavItem = document.querySelector(`#${navId}`);
-  if (activeNavItem) {
-    activeNavItem.classList.add("active");
-  }
+  const activeNavItem = document.getElementById(navId);
+  if (activeNavItem) activeNavItem.classList.add("active");
 
-  // if mobile, close navbar,  new trick https://getbootstrap.com/docs/4.0/components/collapse/
-  let navbarCollapse = document.querySelector(".navbar-collapse");
-  if (navbarCollapse && navbarCollapse.classList.contains("show")) {
-    const bsCollapse = new bootstrap.Collapse(navbarCollapse, {
-      toggle: false,
-    });
-    bsCollapse.hide();
-  }
+  const navbarCollapse = document.querySelector(".navbar-collapse");
+  if (navbarCollapse && navbarCollapse.classList.contains("show"))
+    new bootstrap.Collapse(navbarCollapse, { toggle: false }).hide();
 }
 
 function navigate(newPage) {
-  // hide all
-  document.querySelectorAll(".content-section").forEach((section) => {
-    section.classList.add("d-none"); // bootstrap hide
-  });
-
-  let newSection = document.getElementById(newPage);
+  document
+    .querySelectorAll(".content-section")
+    .forEach((s) => s.classList.add("d-none"));
+  const newSection = document.getElementById(newPage);
+  if (!newSection) return;
   newSection.classList.remove("d-none");
   currentPage = newPage;
 
-  // get data if required
-  if (newPage === "playlist-section") {
-    loadPlaylist();
-  }
-  if (newPage === "myvibe-section") {
-    loadVibe();
-  }
-  if (newPage === "spotify-section") {
-    // Check connection status and show user info if connected
-    checkSpotifyConnection();
-  }
+  if (newPage === "playlist-section") loadPlaylist();
+  if (newPage === "myvibe-section") loadVibe();
+  if (newPage === "spotify-section") checkSpotifyConnection?.();
 
-  // navbar state
   updateNavigation(newPage);
-
-  // Update browser - refactor to hash?
-  // https://stackoverflow.com/questions/9340121/what-are-the-differences-between-history-pushstate-location-hash
-  if (window.location.hash !== `#${newPage}`) {
+  if (window.location.hash !== `#${newPage}`)
     history.pushState({ newPage }, "", `#${newPage}`);
-  }
 }
 
 // SEARCH MAIN
-// --NAV Buttons
 function showArtistSearch() {
   document.getElementById("artist-search-component").classList.remove("d-none");
   document.getElementById("song-search-component").classList.add("d-none");
-  // Clear previous results
   document.getElementById("searchResults").innerHTML = "";
   document.getElementById("songSearchResults").innerHTML = "";
+  // make songSearchBtn less prominent (consider helper function)
+  document.getElementById("songSearchBtn").className =
+    "btn btn-outline-spotify btn-lg w-100 py-3";
+  document.getElementById("artistSearchBtn").className =
+    "btn btn-spotify btn-lg w-100 py-3";
 }
+
 function showSongSearch() {
   document.getElementById("song-search-component").classList.remove("d-none");
   document.getElementById("artist-search-component").classList.add("d-none");
-  // Clear previous results
   document.getElementById("searchResults").innerHTML = "";
   document.getElementById("songSearchResults").innerHTML = "";
+  // make artistSearchBtn less prominent
+  document.getElementById("artistSearchBtn").className =
+    "btn btn-outline-spotify btn-lg w-100 py-3";
+  document.getElementById("songSearchBtn").className =
+    "btn btn-spotify btn-lg w-100 py-3";
 }
 
-// --SEARCH ARTIST
 async function searchArtist() {
   const input = document.getElementById("artistSearchInput");
   const resultsDiv = document.getElementById("searchResults");
   const artistName = input.value.trim();
-
   if (!artistName) {
     resultsDiv.innerHTML =
       '<div class="alert alert-warning">Please enter an artist name</div>';
     return;
   }
-  // call Spinner Element, (replace when data is loaded)
   showSpinner(resultsDiv, `Searching for "${artistName}"...`);
-
-  try {
-    const response = await fetch(
-      `/api/artist-search-lfm/?session_id=${currentSessionId}&artist_name=${encodeURIComponent(
-        artistName
-      )}`
-    );
-
-    if (response.ok) {
-      const data = await response.json();
-      displaySearchResults(data);
-      console.log(data);
-    } else {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-  } catch (error) {
-    console.error("Artist search failed:", error);
-    showError(resultsDiv, `Search failed: ${error.message}`);
-  }
+  const response = await fetch(
+    `/api/artist-search-lfm/?session_id=${currentSessionId}&artist_name=${encodeURIComponent(
+      artistName
+    )}`
+  );
+  const data = await response.json();
+  displaySearchResults(data);
 }
-// --SELECT ARTIST
+
 async function selectArtist(artistName, artistMbid) {
   const resultsDiv = document.getElementById("searchResults");
-
-  // Spinner
   showSpinner(resultsDiv, `Loading songs by ${artistName}...`);
-
-  try {
-    // Build API URL
-    const params = new URLSearchParams({
-      session_id: currentSessionId,
-      artist_name: artistName,
-    });
-
-    if (artistMbid) {
-      params.append("artist_mbid", artistMbid);
-    }
-    // call API
-    const response = await fetch(`/api/artist-search-song-lfm/?${params}`);
-
-    if (response.ok) {
-      const data = await response.json();
-      displayArtistSongResults(data, artistName);
-
-      console.log(data);
-    } else {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-  } catch (error) {
-    console.error("Artist song search failed:", error);
-    showError(resultsDiv, `Failed to load songs: ${error.message}`);
-  }
+  const params = new URLSearchParams({
+    session_id: currentSessionId,
+    artist_name: artistName,
+  });
+  if (artistMbid) params.append("artist_mbid", artistMbid);
+  const response = await fetch(`/api/artist-search-song-lfm/?${params}`);
+  const data = await response.json();
+  displayArtistSongResults(data, artistName);
 }
-// -----Search Artist helper
+
 function displaySearchResults(data) {
   const resultsDiv = document.getElementById("searchResults");
   const artists = data.results.artists;
-
-  if (artists && artists.length > 0) {
+  if (artists?.length) {
     let html = '<h6>Search Results:</h6><div class="list-group">';
-
     artists.forEach((artist) => {
       html += `
         <div class="list-group-item">
@@ -326,66 +334,42 @@ function displaySearchResults(data) {
             <button class="btn btn-spotify btn-sm" onclick="selectArtist('${artist.name.replace(
               /'/g,
               "\\'"
-            )}', '${artist.mbid || ""}')">
-              Select
-            </button>
+            )}', '${artist.mbid || ""}')">Select</button>
           </div>
-        </div>
-      `;
+        </div>`;
     });
-
-    html += "</div>";
-    resultsDiv.innerHTML = html; // overwrite spinner
+    resultsDiv.innerHTML = html + "</div>";
   } else {
     resultsDiv.innerHTML =
       '<div class="alert alert-info">No artists found</div>';
   }
 }
-// -----Display Artist helper
+
 function displayArtistSongResults(data, artistName) {
   const resultsDiv = document.getElementById("searchResults");
   const tracks = data.results.tracks;
-
-  if (tracks && tracks.length > 0) {
+  if (tracks?.length) {
     let html = `<h6>Songs by ${artistName}:</h6><div class="list-group">`;
-
     tracks.forEach((track, index) => {
-      // unique ID for each result
       const songId = `artist-song-result-${index}-${Date.now()}`;
       html += `
         <div class="list-group-item" id="${songId}">
           <div class="d-flex w-100 justify-content-between">
-            <div>
-              <h6 class="mb-1">${track.name}</h6>
-            </div>
+            <div><h6 class="mb-1">${track.name}</h6></div>
             <button class="btn btn-spotify btn-sm" onclick="addSongToPlaylistVibe('${track.name.replace(
               /'/g,
               "\\'"
             )}', '${(track.artist || artistName).replace(/'/g, "\\'")}', '${
         track.mbid || ""
-      }', '', '${songId}')">
-              Add
-            </button>
+      }', '', '${songId}')">Add</button>
           </div>
-        </div>
-      `;
+        </div>`;
     });
-
-    html += `</div>
-      <div class="mt-3">
-        <button class="btn btn-outline-secondary" onclick="goBackToArtistSearch()">
-          ← Back to Artist Search
-        </button>
-      </div>`;
-    resultsDiv.innerHTML = html;
+    resultsDiv.innerHTML =
+      html +
+      `</div><div class="mt-3"><button class="btn btn-outline-secondary" onclick="goBackToArtistSearch()">← Back to Artist Search</button></div>`;
   } else {
-    resultsDiv.innerHTML = `
-      <div class="alert alert-info">No songs found for ${artistName}</div>
-      <div class="mt-3">
-        <button class="btn btn-outline-secondary" onclick="goBackToArtistSearch()">
-          ← Back to Artist Search
-        </button>
-      </div>`;
+    resultsDiv.innerHTML = `<div class="alert alert-info">No songs found for ${artistName}</div><div class="mt-3"><button class="btn btn-outline-secondary" onclick="goBackToArtistSearch()">← Back to Artist Search</button></div>`;
   }
 }
 
@@ -395,52 +379,31 @@ async function searchSong() {
   const resultsDiv = document.getElementById("songSearchResults");
   const songName = songInput.value.trim();
   const artistName = artistInput.value.trim();
-
   if (!songName) {
     resultsDiv.innerHTML =
       '<div class="alert alert-warning">Please enter a song name</div>';
     return;
   }
-  // spimmer
   showSpinner(
     resultsDiv,
     `Searching for "${songName}"${artistName ? ` by ${artistName}` : ""}...`
   );
-
-  try {
-    const params = new URLSearchParams({
-      session_id: currentSessionId,
-      song_name: songName,
-    });
-
-    if (artistName) {
-      params.append("artist_name", artistName);
-    }
-    // API Call song search
-    const response = await fetch(`/api/song-search-lfm/?${params}`);
-
-    if (response.ok) {
-      const data = await response.json();
-      displaySongSearchResults(data);
-    } else {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-  } catch (error) {
-    console.error("Song search failed:", error);
-    showError(resultsDiv, `Search failed: ${error.message}`);
-  }
+  const params = new URLSearchParams({
+    session_id: currentSessionId,
+    song_name: songName,
+  });
+  if (artistName) params.append("artist_name", artistName);
+  const response = await fetch(`/api/song-search-lfm/?${params}`);
+  const data = await response.json();
+  displaySongSearchResults(data);
 }
 
-// ----helper displaySongSearchResults
 function displaySongSearchResults(data) {
   const resultsDiv = document.getElementById("songSearchResults");
   const tracks = data.results.tracks;
-
-  if (tracks && tracks.length > 0) {
+  if (tracks?.length) {
     let html = '<h6>Search Results:</h6><div class="list-group">';
-
     tracks.forEach((track, index) => {
-      // Generate unique ID for each result
       const songId = `song-result-${index}`;
       html += `
         <div class="list-group-item" id="${songId}">
@@ -454,31 +417,22 @@ function displaySongSearchResults(data) {
               "\\'"
             )}', '${track.artist.replace(/'/g, "\\'")}', '${
         track.mbid || ""
-      }', '', '${songId}')">
-              Add
-            </button>
+      }', '', '${songId}')">Add</button>
           </div>
-        </div>
-      `;
+        </div>`;
     });
-
-    html += "</div>";
-    resultsDiv.innerHTML = html;
+    resultsDiv.innerHTML = html + "</div>";
   } else {
     resultsDiv.innerHTML = '<div class="alert alert-info">No songs found</div>';
   }
 }
 
-// PLAYLIST
-// PLAYLIST IS LOADed on navigation
-// -- display playlist helper
+// PLAYLIST & VIBE DISPLAY
 function displayPlaylist(data) {
   const playlistContent = document.getElementById("playlistContent");
   const songs = data.songs;
-
-  if (songs && songs.length > 0) {
+  if (songs?.length) {
     let html = `<h6>Your Playlist (${songs.length} songs):</h6><div class="list-group" id="playlist-sortable">`;
-
     songs.forEach((song, index) => {
       html += `
         <div class="list-group-item playlist-item" draggable="true" data-song-id="${
@@ -486,46 +440,35 @@ function displayPlaylist(data) {
         }" data-playlist-sequence="${song.playlist_sequence}">
           <div class="d-flex w-100 justify-content-between align-items-center">
             <div class="d-flex align-items-center gap-2">
-              <div class="drag-handle me-1" style="cursor: grab;">
-                <i class="fas fa-grip-vertical text-muted"></i>
-              </div>
+              <span class="drag-handle me-1" aria-hidden="true" style="cursor: grab;">⋮⋮</span>
               <span class="badge bg-secondary">#${index + 1}</span>
               <h6 class="mb-1">${song.song_title} - ${song.artist_name}</h6>
             </div>
             <div class="d-flex gap-2">
-              <button class="btn btn-remove btn-sm" onclick="removeSongFromPlaylist('${
+              <button class="btn btn-remove btn-sm" onclick="removeSongFromList('${
                 song.id
-              }', this)" title="Remove from playlist">
-                Remove
-              </button>
+              }', 'playlist', this)" title="Remove from playlist">Remove</button>
             </div>
           </div>
-        </div>
-      `;
+        </div>`;
     });
-
-    html += "</div>";
-    playlistContent.innerHTML = html;
-
-    // Initialize drag and drop
+    playlistContent.innerHTML = html + "</div>";
     setupPlaylistDrag();
   } else {
-    playlistContent.innerHTML = `
-      <div class="alert alert-info text-center">
-        <h6>Your playlist is empty</h6>
-        <p class="mb-0">Add songs from the Search page to build your playlist!</p>
-      </div>`;
+    playlistContent.innerHTML = `<div class="alert alert-info text-center"><h6>Your playlist is empty</h6></div>`;
+    playlistContent.innerHTML += `<div class="mt-3 text-center">
+    <button class="btn btn-spotify" onclick="navigate('search-section')">
+    <i class="bi bi-search"></i> Search for Songs
+    </button>
+  </div>`;
   }
 }
 
-// -- display vibe helper
 function displayVibe(data) {
   const vibeContent = document.getElementById("vibeContent");
   const songs = data?.songs || [];
-
-  if (songs && songs.length > 0) {
+  if (songs.length) {
     let html = `<h6>Your Vibe (${songs.length} songs):</h6><div class="list-group" id="vibe-sortable">`;
-
     songs.forEach((song, index) => {
       html += `
         <div class="list-group-item vibe-item" draggable="true" data-song-id="${
@@ -533,395 +476,208 @@ function displayVibe(data) {
         }" data-vibe-sequence="${song.vibe_sequence}">
           <div class="d-flex w-100 justify-content-between align-items-center">
             <div class="d-flex align-items-center gap-2">
-              <div class="drag-handle me-1" style="cursor: grab;">
-                <i class="fas fa-grip-vertical text-muted"></i>
-              </div>
+              <span class="drag-handle me-1" aria-hidden="true" style="cursor: grab;">⋮⋮</span>
               <span class="badge bg-secondary">#${index + 1}</span>
               <h6 class="mb-1">${song.song_title} - ${song.artist_name}</h6>
             </div>
             <div class="d-flex gap-2">
-              <button class="btn btn-remove btn-sm" onclick="removeSongFromVibe('${
+              <button class="btn btn-remove btn-sm" onclick="removeSongFromList('${
                 song.id
-              }', this)" title="Remove from vibe">
-                Remove
-              </button>
+              }', 'vibe', this)" title="Remove from vibe">Remove</button>
             </div>
           </div>
-        </div>
-      `;
+        </div>`;
     });
-
-    html += "</div>";
-    vibeContent.innerHTML = html;
-
-    // Initialize drag and drop for vibe
+    vibeContent.innerHTML = html + "</div>";
     setupVibeDrag();
   } else {
-    vibeContent.innerHTML = `
-      <div class="alert alert-info text-center">
-        <h6>Your vibe is empty</h6>
-        <p class="mb-0">Add songs from the Search page to build your vibe!</p>
-      </div>`;
+    vibeContent.innerHTML = `<div class="alert alert-info text-center"><h6>Your vibe is empty</h6><p class="mb-0">Add songs from the Search page to build your vibe!</p></div>`;
   }
 }
-// -- removeSongFromPlaylist helper
-async function removeSongFromPlaylist(songId, buttonElement) {
+
+// COMMON REMOVE
+async function removeSongFromList(songId, listType, btn) {
   const params = new URLSearchParams({
     session_id: currentSessionId,
     id: songId,
-    list_type: "playlist",
+    list_type: listType,
   });
-
-  const response = await fetch(`/api/remove-list/?${params}`, {
+  await fetch(`/api/remove-list/?${params}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-CSRFToken": getCSRFToken(),
     },
   });
-  console.log(response);
-
-  // Remove the song item
-  const songElement = buttonElement.closest(".list-group-item");
-  if (songElement) {
-    songElement.style.opacity = "0";
+  const item = btn.closest(".list-group-item");
+  if (item) {
+    item.style.opacity = "0";
     setTimeout(() => {
-      songElement.remove();
-      // Reload playlist to update numbering
-      loadPlaylist();
-    }, 300);
+      item.remove();
+      if (listType === "playlist") loadPlaylist();
+      else loadVibe();
+    }, 200);
   }
 }
 
-// -- drag and drop helper   setupPlaylistDrag
+// DRAG & DROP — PLAYLIST
 function setupPlaylistDrag() {
-  const sortableContainer = document.getElementById("playlist-sortable");
-  if (!sortableContainer) return;
-
-  let draggedElement = null;
+  const sortable = document.getElementById("playlist-sortable");
+  if (!sortable) return;
   let draggedIndex = null;
-
-  // Add event listeners to all playlist items
-  const playlistItems = sortableContainer.querySelectorAll(".playlist-item");
-
-  playlistItems.forEach((item, index) => {
-    // Drag start
-    item.addEventListener("dragstart", function (e) {
-      draggedElement = this;
+  const items = sortable.querySelectorAll(".playlist-item");
+  items.forEach((item, index) => {
+    item.addEventListener("dragstart", () => {
       draggedIndex = index;
-      this.classList.add("dragging");
-
-      // Set drag effect
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/html", this.outerHTML);
+      item.classList.add("dragging");
     });
-
-    // Drag end
-    item.addEventListener("dragend", function (e) {
-      this.classList.remove("dragging");
-
-      // Remove drag-over class from all items
-      sortableContainer.querySelectorAll(".playlist-item").forEach((item) => {
-        item.classList.remove("drag-over");
-      });
-
-      draggedElement = null;
-      draggedIndex = null;
+    item.addEventListener("dragend", () => {
+      item.classList.remove("dragging");
+      sortable
+        .querySelectorAll(".playlist-item")
+        .forEach((i) => i.classList.remove("drag-over"));
     });
-
-    // Drag over
-    item.addEventListener("dragover", function (e) {
+    item.addEventListener("dragover", (e) => {
       e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-
-      // Add visual indicator
-      if (draggedElement && draggedElement !== this) {
-        this.classList.add("drag-over");
-      }
+      const currentItems = sortable.querySelectorAll(".playlist-item");
+      if (draggedIndex !== null && currentItems[draggedIndex] !== item)
+        item.classList.add("drag-over");
     });
-
-    // Drag enter
-    item.addEventListener("dragenter", function (e) {
+    item.addEventListener("dragleave", () =>
+      item.classList.remove("drag-over")
+    );
+    item.addEventListener("drop", async (e) => {
       e.preventDefault();
-    });
-
-    // Drag leave
-    item.addEventListener("dragleave", function (e) {
-      this.classList.remove("drag-over");
-    });
-
-    // Drop
-    item.addEventListener("drop", function (e) {
-      e.preventDefault();
-      this.classList.remove("drag-over");
-
-      if (draggedElement && draggedElement !== this) {
-        const dropIndex = Array.from(sortableContainer.children).indexOf(this);
-        playlistReorder(draggedIndex, dropIndex);
-      }
+      item.classList.remove("drag-over");
+      const dropIndex = Array.from(sortable.children).indexOf(item);
+      await playlistReorder(draggedIndex, dropIndex);
     });
   });
 }
 
-// --playlist reorder helper
 async function playlistReorder(fromIndex, toIndex) {
-  const sortableContainer = document.getElementById("playlist-sortable");
-  const items = Array.from(sortableContainer.children);
-
-  // Create new order array
-  const reorderData = [];
-
-  // Move the dragged item to new position
-  const movedItem = items.splice(fromIndex, 1)[0];
-  items.splice(toIndex, 0, movedItem);
-
-  // Update the playlist_sequence for all items
-  items.forEach((item, newIndex) => {
-    const songId = parseInt(item.dataset.songId);
-    const newSequence = newIndex + 1;
-
-    reorderData.push({
-      id: songId,
-      playlist_sequence: newSequence,
-    });
+  const sortable = document.getElementById("playlist-sortable");
+  const items = Array.from(sortable.children);
+  const moved = items.splice(fromIndex, 1)[0];
+  items.splice(toIndex, 0, moved);
+  const body = items.map((item, idx) => ({
+    id: parseInt(item.dataset.songId),
+    playlist_sequence: idx + 1,
+  }));
+  await fetch(`/api/order-playlist/?session_id=${currentSessionId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCSRFToken(),
+    },
+    body: JSON.stringify(body),
   });
-
-  // Call API to update order
-  const response = await fetch(
-    `/api/order-playlist/?session_id=${currentSessionId}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRFToken": getCSRFToken(),
-      },
-      body: JSON.stringify(reorderData),
-    }
-  );
-
-  const result = await response.json();
-  console.log("Playlist reordered successfully:", result);
-
-  // Reload playlist
   await loadPlaylist();
 }
 
-// --add songs helper
+// DRAG & DROP — VIBE
+function setupVibeDrag() {
+  const sortable = document.getElementById("vibe-sortable");
+  if (!sortable) return;
+  let draggedIndex = null;
+  const items = sortable.querySelectorAll(".vibe-item");
+  items.forEach((item, index) => {
+    item.addEventListener("dragstart", () => {
+      draggedIndex = index;
+      item.classList.add("dragging");
+    });
+    item.addEventListener("dragend", () => {
+      item.classList.remove("dragging");
+      sortable
+        .querySelectorAll(".vibe-item")
+        .forEach((i) => i.classList.remove("drag-over"));
+    });
+    item.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      const currentItems = sortable.querySelectorAll(".vibe-item");
+      if (draggedIndex !== null && currentItems[draggedIndex] !== item)
+        item.classList.add("drag-over");
+    });
+    item.addEventListener("dragleave", () =>
+      item.classList.remove("drag-over")
+    );
+    item.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      item.classList.remove("drag-over");
+      const dropIndex = Array.from(sortable.children).indexOf(item);
+      await vibeReorder(draggedIndex, dropIndex);
+    });
+  });
+}
+
+async function vibeReorder(fromIndex, toIndex) {
+  const sortable = document.getElementById("vibe-sortable");
+  const items = Array.from(sortable.children);
+  const moved = items.splice(fromIndex, 1)[0];
+  items.splice(toIndex, 0, moved);
+  const body = items.map((item, idx) => ({
+    id: parseInt(item.dataset.songId),
+    vibe_sequence: idx + 1,
+  }));
+  await fetch(`/api/order-vibe/?session_id=${currentSessionId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": getCSRFToken(),
+    },
+    body: JSON.stringify(body),
+  });
+  await loadVibe();
+}
+
+// SONG ADDITION
 async function addSongToPlaylistVibe(
   songName,
   artistName,
   songMbid,
   artistMbid,
-  songElementId
+  buttonElementId
 ) {
   const params = new URLSearchParams({
     session_id: currentSessionId,
+    song_title: songName,
     artist_name: artistName,
-    song_name: songName,
+    list_type: "playlist,vibe",
   });
-  // build request
-  if (artistMbid) params.append("artist_mbid", artistMbid);
-  if (songMbid) params.append("song_mbid", songMbid);
-  // call API add to playlist and vibe
-  const response = await fetch(`/api/add-playlist-vibe/?${params}`, {
+  if (songMbid) params.append("song_id", songMbid);
+  if (artistMbid) params.append("artist_id", artistMbid);
+
+  await fetch(`/api/add-song/?${params}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-CSRFToken": getCSRFToken(),
     },
   });
-  console.log(response);
-  // Remove the item from results
-  const songElement = document.getElementById(songElementId);
-  songElement.style.opacity = "0";
-  setTimeout(() => songElement.remove(), 300);
 
-  // console.log(songName, artistName, songMbid, artistMbid, songElementId);
+  document.getElementById(buttonElementId).remove();
 }
 
-// -- removeSongFromVibe helper
-async function removeSongFromVibe(songId, buttonElement) {
-  const params = new URLSearchParams({
-    session_id: currentSessionId,
-    id: songId,
-    list_type: "vibe",
-  });
-
-  const response = await fetch(`/api/remove-list/?${params}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-CSRFToken": getCSRFToken(),
-    },
-  });
-  console.log(response);
-
-  // Remove the song item
-  const songElement = buttonElement.closest(".list-group-item");
-  if (songElement) {
-    songElement.style.opacity = "0";
-    setTimeout(() => {
-      songElement.remove();
-      // Reload vibe to update numbering
-      loadVibe();
-    }, 300);
-  }
-}
-
-// -- drag and drop helper for vibe
-function setupVibeDrag() {
-  const sortableContainer = document.getElementById("vibe-sortable");
-  if (!sortableContainer) return;
-
-  let draggedElement = null;
-  let draggedIndex = null;
-
-  // Add event listeners to all vibe items
-  const vibeItems = sortableContainer.querySelectorAll(".vibe-item");
-
-  vibeItems.forEach((item, index) => {
-    // Drag start
-    item.addEventListener("dragstart", function (e) {
-      draggedElement = this;
-      draggedIndex = index;
-      this.classList.add("dragging");
-
-      // Set drag effect
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/html", this.outerHTML);
-    });
-
-    // Drag end
-    item.addEventListener("dragend", function (e) {
-      this.classList.remove("dragging");
-
-      // Remove drag-over class from all items
-      sortableContainer.querySelectorAll(".vibe-item").forEach((item) => {
-        item.classList.remove("drag-over");
-      });
-
-      draggedElement = null;
-      draggedIndex = null;
-    });
-
-    // Drag over
-    item.addEventListener("dragover", function (e) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-
-      // Add visual indicator
-      if (draggedElement && draggedElement !== this) {
-        this.classList.add("drag-over");
-      }
-    });
-
-    // Drag enter
-    item.addEventListener("dragenter", function (e) {
-      e.preventDefault();
-    });
-
-    // Drag leave
-    item.addEventListener("dragleave", function (e) {
-      this.classList.remove("drag-over");
-    });
-
-    // Drop
-    item.addEventListener("drop", function (e) {
-      e.preventDefault();
-      this.classList.remove("drag-over");
-
-      if (draggedElement && draggedElement !== this) {
-        const dropIndex = Array.from(sortableContainer.children).indexOf(this);
-        vibeReorder(draggedIndex, dropIndex);
-      }
-    });
-  });
-}
-
-// --vibe reorder helper
-async function vibeReorder(fromIndex, toIndex) {
-  const sortableContainer = document.getElementById("vibe-sortable");
-  const items = Array.from(sortableContainer.children);
-
-  // Create new order array
-  const reorderData = [];
-
-  // Move the dragged item to new position
-  const movedItem = items.splice(fromIndex, 1)[0];
-  items.splice(toIndex, 0, movedItem);
-
-  // Update the vibe_sequence for all items
-  items.forEach((item, newIndex) => {
-    const songId = parseInt(item.dataset.songId);
-    const newSequence = newIndex + 1;
-
-    reorderData.push({
-      id: songId,
-      vibe_sequence: newSequence,
-    });
-  });
-
-  // Call API to update order
-  const response = await fetch(
-    `/api/order-vibe/?session_id=${currentSessionId}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRFToken": getCSRFToken(),
-      },
-      body: JSON.stringify(reorderData),
-    }
-  );
-
-  const result = await response.json();
-  console.log("Vibe reordered successfully:", result);
-
-  // Reload vibe
-  await loadVibe();
-}
-
-// Helper functions for navigation
+// NAV HELPERS
 function goBackToArtistSearch() {
   document.getElementById("searchResults").innerHTML = "";
   document.getElementById("artistSearchInput").value = "";
 }
 
-// Initialize app on page load
-document.addEventListener("DOMContentLoaded", function () {
-  // Check if there's a stored session
-  const storedSessionId = localStorage.getItem("fnt_session_id");
-  if (storedSessionId) {
-    currentSessionId = storedSessionId;
-    displaySessionId(storedSessionId);
-  }
-
-  // Check for Spotify callback parameters first
-  checkSpotifyCallback();
-
-  // Only check Spotify connection if we're navigating to the Spotify section
-  // or if there was a successful callback
-  // Don't check on every page load to avoid unnecessary 401 errors
-
-  // Handle hash navigation
-  const hash = window.location.hash;
-  if (hash) {
-    const page = hash.substring(1);
-    if (document.getElementById(page)) {
-      navigate(page);
-    }
-  }
-});
-
-// Recommendation functions placeholders
+// RECOMMENDATIONS (artist-based; vibe placeholder)
 function showArtistRecommend() {
   document
     .getElementById("artist-recommend-component")
     .classList.remove("d-none");
   document.getElementById("vibe-recommend-component").classList.add("d-none");
-  // Clear previous results
   document.getElementById("recommendationsResults").innerHTML = "";
   document.getElementById("vibeRecommendationsResults").innerHTML = "";
+
+  // make vibeRecommendBtn less prominent (consider helper function
+  document.getElementById("vibeRecommendBtn").className =
+    "btn btn-outline-spotify btn-lg w-100 py-3";
+  document.getElementById("artistRecommendBtn").className =
+    "btn btn-spotify btn-lg w-100 py-3";
 }
 
 function showVibeRecommend() {
@@ -929,73 +685,168 @@ function showVibeRecommend() {
     .getElementById("vibe-recommend-component")
     .classList.remove("d-none");
   document.getElementById("artist-recommend-component").classList.add("d-none");
-  // Clear previous results
   document.getElementById("recommendationsResults").innerHTML = "";
   document.getElementById("vibeRecommendationsResults").innerHTML = "";
+  // make artistRecommendBtn less prominent (consider helper function
+  document.getElementById("vibeRecommendBtn").className =
+    "btn btn-spotify btn-lg w-100 py-3";
+  document.getElementById("artistRecommendBtn").className =
+    "btn btn-outline-spotify btn-lg w-100 py-3";
 }
 
 async function getRecommendations() {
   const input = document.getElementById("recommendArtistInput");
   const resultsDiv = document.getElementById("recommendationsResults");
   const artistName = input.value.trim();
-
+  if (!currentSessionId) {
+    resultsDiv.innerHTML =
+      '<div class="alert alert-warning">Please create a session first to get recommendations</div>';
+    return;
+  }
   if (!artistName) {
     resultsDiv.innerHTML =
       '<div class="alert alert-warning">Please enter an artist name</div>';
     return;
   }
-
   showSpinner(resultsDiv, `Getting recommendations for "${artistName}"...`);
-
-  try {
-    const response = await fetch(
-      `/api/recommend/?session_id=${currentSessionId}&artist_name=${encodeURIComponent(
-        artistName
-      )}`
-    );
-
-    if (response.ok) {
-      const data = await response.json();
-      showResults(data, artistName);
-    } else {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-  } catch (error) {
-    console.error("Recommendations failed:", error);
-    showError(resultsDiv, `Failed to get recommendations: ${error.message}`);
-  }
+  const response = await fetch(
+    `/api/recommend/?session_id=${currentSessionId}&artist_name=${encodeURIComponent(
+      artistName
+    )}`
+  );
+  const data = await response.json();
+  showResults(data, artistName);
 }
 
 async function getVibeRecommendations() {
   const resultsDiv = document.getElementById("vibeRecommendationsResults");
 
-  if (!currentSessionId) {
+  showSpinner(resultsDiv, "Getting recommendations...");
+
+  //Get the vibe list
+  const vibeResponse = await fetch(
+    `/api/get-songs/?session_id=${currentSessionId}&list_type=vibe`
+  );
+  const vibeData = await vibeResponse.json();
+  const vibeSongs = vibeData.songs || [];
+
+  if (vibeSongs.length === 0) {
     resultsDiv.innerHTML =
-      '<div class="alert alert-warning">Please create a session first</div>';
+      '<div class="alert alert-info">Add songs to your playlist first</div>';
     return;
   }
 
-  showSpinner(resultsDiv, "Getting vibe-based recommendations...");
+  // Step 2: top 5 artist from vibe (top of list)
+  const uniqueArtists = [...new Set(vibeSongs.map((song) => song.artist_name))];
+  const firstFiveArtists = uniqueArtists.slice(0, 5);
 
-  try {
-    // For now, this is a placeholder - you might need to implement a specific vibe-based recommendation endpoint
-    resultsDiv.innerHTML = '<div class="alert alert-info">TODO</div>';
-  } catch (error) {
-    console.error("Vibe recommendations failed:", error);
-    showError(
-      resultsDiv,
-      `Failed to get vibe recommendations: ${error.message}`
-    );
-  }
+  // Step 3: recomendations  for each artist
+  showSpinner(resultsDiv, `Getting recommendations...this can take a while..`);
+
+  const recommendationPromises = firstFiveArtists.map((artistName) =>
+    fetch(
+      `/api/recommend/?session_id=${currentSessionId}&artist_name=${encodeURIComponent(
+        artistName
+      )}`
+    )
+      .then((response) => response.json())
+      .catch((error) => ({ results: { recommendations: [] } }))
+  );
+
+  const allRecommendations = await Promise.all(recommendationPromises);
+
+  // Step 4: see which songs appear most
+  const trackCounts = new Map();
+  const trackDetails = new Map();
+
+  allRecommendations.forEach((recData) => {
+    const recommendations = recData.results?.recommendations || [];
+    recommendations.forEach((track) => {
+      const trackKey = `${track.name}|${track.artist_name}`;
+
+      if (trackCounts.has(trackKey)) {
+        trackCounts.set(trackKey, trackCounts.get(trackKey) + 1);
+      } else {
+        trackCounts.set(trackKey, 1);
+        trackDetails.set(trackKey, track);
+      }
+    });
+  });
+
+  // Step 5: filter out songs on the Songs table already
+  const existingSongsResponse = await fetch(
+    `/api/get-songs/?session_id=${currentSessionId}&list_type=playlist`
+  );
+  const existingSongsData = await existingSongsResponse.json();
+  const existingSongs = existingSongsData.songs || [];
+
+  // existing songs
+  const existingSongKeys = new Set(
+    existingSongs.map((song) => `${song.song_title}|${song.artist_name}`)
+  );
+
+  // Step 6: Filter out existing , sort by count then popularity
+  const filteredTracks = Array.from(trackCounts.entries())
+    .filter(([trackKey]) => !existingSongKeys.has(trackKey))
+    .map(([trackKey, count]) => {
+      const track = trackDetails.get(trackKey);
+      return {
+        ...track,
+        occurrence_count: count,
+      };
+    })
+    .sort((a, b) => {
+      //sort by count
+      if (b.occurrence_count !== a.occurrence_count) {
+        return b.occurrence_count - a.occurrence_count;
+      }
+      // sort by popularity
+      return (b.popularity || 0) - (a.popularity || 0);
+    })
+    .slice(0, 20); // Get top 20
+
+  showVibeRecommendationsResults(filteredTracks, firstFiveArtists);
+}
+
+function showVibeRecommendationsResults(tracks, seedArtists) {
+  const resultsDiv = document.getElementById("vibeRecommendationsResults");
+
+  let html = `
+    <div class="mb-3">
+      <p class="text-muted mb-2">Your Current Vibe: ${seedArtists.join(
+        ", "
+      )}</p>
+    </div>
+    <div class="list-group">`;
+
+  tracks.forEach((track, index) => {
+    const songId = `vibe-rec-song-result-${index}-${Date.now()}`;
+
+    html += `
+      <div class="list-group-item" id="${songId}">
+        <div class="d-flex w-100 justify-content-between">
+          <div>
+            <h6 class="mb-1">${track.name}</h6>
+            <p class="mb-1 text-muted">by ${track.artist_name}</p>
+          </div>
+          <button class="btn btn-spotify btn-sm" onclick="addSongToPlaylistVibe('${track.name.replace(
+            /'/g,
+            "\\'"
+          )}', '${track.artist_name.replace(/'/g, "\\'")}', '${
+      track.mbid || ""
+    }', '${track.artist_mbid || ""}', '${songId}')">Add</button>
+        </div>
+      </div>`;
+  });
+
+  resultsDiv.innerHTML = html + "</div>";
 }
 
 function showResults(data, artistName) {
   const resultsDiv = document.getElementById("recommendationsResults");
   const recommendations = data.results?.recommendations || [];
-
-  if (recommendations && recommendations.length > 0) {
+  if (recommendations.length) {
     let html = `<h6>Recommendations based on ${artistName}:</h6><div class="list-group">`;
-
     recommendations.forEach((track, index) => {
       const songId = `rec-song-result-${index}-${Date.now()}`;
       html += `
@@ -1010,17 +861,73 @@ function showResults(data, artistName) {
               "\\'"
             )}', '${track.artist_name.replace(/'/g, "\\'")}', '${
         track.mbid || ""
-      }', '${track.artist_mbid || ""}', '${songId}')">
-              Add
-            </button>
+      }', '${track.artist_mbid || ""}', '${songId}')">Add</button>
           </div>
-        </div>
-      `;
+        </div>`;
     });
-
-    html += "</div>";
-    resultsDiv.innerHTML = html;
+    resultsDiv.innerHTML = html + "</div>";
   } else {
     resultsDiv.innerHTML = `<div class="alert alert-info">No recommendations found for ${artistName}</div>`;
   }
 }
+
+// MODAL NAVIGATION
+function goToSearch() {
+  const modal = bootstrap.Modal.getInstance(
+    document.getElementById("sessionCreatedModal")
+  );
+  modal.hide();
+  navigate("search-section");
+}
+
+function goToRecommendations() {
+  const modal = bootstrap.Modal.getInstance(
+    document.getElementById("sessionCreatedModal")
+  );
+  if (modal) {
+    modal.hide();
+  }
+  navigate("recommend-section");
+}
+
+function goToSpotify() {
+  const modal = bootstrap.Modal.getInstance(
+    document.getElementById("sessionCreatedModal")
+  );
+  if (modal) {
+    modal.hide();
+  }
+  navigate("spotify-section");
+}
+
+// NAVIGATION HELPER
+function goToPlaylist() {
+  navigate("playlist-section");
+}
+
+function goToVibeList() {
+  navigate("myvibe-section");
+}
+
+// INIT
+document.addEventListener("DOMContentLoaded", async function () {
+  const hasSession = await restoreSession();
+  checkSpotifyCallback?.();
+  const hash = window.location.hash;
+  if (hash && document.getElementById(hash.substring(1)))
+    navigate(hash.substring(1));
+  else if (hasSession) updateNavigationAccess(true);
+
+  window.addEventListener("storage", function (e) {
+    if (e.key === "fnt_session_data") {
+      if (e.newValue) {
+        currentSessionId = JSON.parse(e.newValue).id;
+        updateSessionUI(SessionStates.ACTIVE, currentSessionId);
+      } else {
+        currentSessionId = null;
+        updateSessionUI(SessionStates.NO_SESSION);
+        if (currentPage !== "home-section") navigate("home-section");
+      }
+    }
+  });
+});

@@ -70,8 +70,34 @@ def find_artist(artist_name):
         "format": "json",
         "limit": 100,
     }
-    response = requests.get(url, params=params)
-    data = response.json()
+    
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        data = response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Request error in find_artist: {e}")
+        return {
+            "results": {
+                "artists": []
+            }
+        }
+    except ValueError as e:  # JSON decode error
+        print(f"JSON decode error in find_artist: {e}")
+        return {
+            "results": {
+                "artists": []
+            }
+        }
+    
+    # Check for API error in response
+    if "error" in data:
+        print(f"Last.fm API error in find_artist: {data.get('message', 'Unknown error')}")
+        return {
+            "results": {
+                "artists": []
+            }
+        }
     
     # Extract and filter artist data
     if "results" in data and "artistmatches" in data["results"]:

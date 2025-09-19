@@ -21,7 +21,6 @@
 # SpotifyRefreshTokenView - Refreshes token 
 
 import base64
-import json
 from urllib.parse import urlencode
 
 import requests
@@ -30,16 +29,26 @@ from django.http import HttpResponseRedirect
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
+from api.models import Session
+
 
 # HELPERS 
 # header token 
 def headerToken(request):
-    token = request.session.get("spotify", {}).get("access_token")
-    if not token:
+    session_id = request.query_params.get("session_id") or request.data.get("session_id")
+    if not session_id:
         return None
-    return {"Authorization": f"Bearer {token}"}
+    
+    try:
+        session = Session.objects.get(session_id=session_id)
+        token = session.spotify_access_token
+        if not token:
+            return None
+        return {"Authorization": f"Bearer {token}"}
+    except Session.DoesNotExist:
+        return None
 
-# error codes
+# error codes from Spotify API documentation
 def getDescription(code):
     if code == 200:
         return "OK - The request has succeeded. The client can read the result of the request in the body and the headers of the response."
@@ -104,10 +113,10 @@ def callSpotifyAPI(url, headers, empty204=None, method="GET", json_data=None):
     elif result.status_code in [400, 401, 403, 404, 429, 500, 502, 503]:
         return Response(
             {
-                "error": "Spotify error " + str(r.status_code),
-                "description": getDescription(r.status_code),
+                "error": "Spotify error " + str(result.status_code),
+                "description": getDescription(result.status_code),
             },
-            status=r.status_code,
+            status=result.status_code,
         )
 
     # catch
@@ -115,7 +124,7 @@ def callSpotifyAPI(url, headers, empty204=None, method="GET", json_data=None):
         return Response(
             {
                 "status_code": result.status_code,
-                "description": getDescription(r.status_code),
+                "description": getDescription(result.status_code),
             },
             status=result.status_code,
         )
@@ -231,12 +240,7 @@ class SpotifyPlayTrackView(APIView):
         if not headers:
             return Response({"error": "Not authenticated"}, status=401)
 
-        try:
-            data = json.loads(request.body) if request.body else {}
-        except json.JSONDecodeError:
-            return Response({"error": "Invalid JSON body"}, status=400)
-
-        track_uri = data.get("track_uri")
+        track_uri = request.data.get("track_uri")
         if not track_uri:
             return Response({"error": "No track URI provided"}, status=400)
 
@@ -327,7 +331,7 @@ class SpotifyAuthView(APIView):
         url = "https://accounts.spotify.com/authorize?" + urlencode(qs)
 
         response_format = request.query_params.get("format")
-        # accept_headeresult = request.headers.get("Accept", "")
+        accept_header = request.headers.get("Accept", "")
 
         if response_format == "json" or (response_format != "redirect" and "application/json" in accept_header):
             return Response({
@@ -375,7 +379,7 @@ class SpotifyAuthView(APIView):
             return Response({"error": f"Network error: {e}"}, status=500)
 
         if result.status_code != 200:
-            return Response({"error": "Could not get tokens"}, status=r.status_code)
+            return Response({"error": "Could not get tokens"}, status=result.status_code)
 
         try:
             tokens = result.json()
@@ -436,17 +440,52 @@ class SpotifyCallbackView(APIView):
         except Exception:
             tokens = {}
 
+        # Store tokens in Django session for compatibility
         request.session["spotify"] = tokens
+        
+        # Also store tokens in Session model for API access
+        # Get current session from Django session
+        current_session_data = request.session.get("current_session")
+        if current_session_data and current_session_data.get("session_id"):
+            try:
+                session_obj = Session.objects.get(session_id=current_session_data["session_id"])
+                session_obj.spotify_access_token = tokens.get("access_token")
+                session_obj.spotify_refresh_token = tokens.get("refresh_token")
+                # Calculate expiry time
+                expires_in = tokens.get("expires_in", 3600)
+                from datetime import datetime, timedelta
+                session_obj.spotify_token_expires = datetime.now() + timedelta(seconds=expires_in)
+                session_obj.save()
+            except Session.DoesNotExist:
+                pass  # Session not found, continue anyway
+        
         return HttpResponseRedirect("/?spotify=connected")
 
 
 # Refresh Token: POST /refresh-token
 class SpotifyRefreshTokenView(APIView):
     def post(self, request, *args, **kwargs):
-        session_data = request.session.get("spotify", {})
-        refresh_token = session_data.get("refresh_token")
+        # Get session_id from request
+        session_id = request.data.get("session_id") or request.query_params.get("session_id")
+        
+        # First try to get refresh token from Session model
+        refresh_token = None
+        session_obj = None
+        
+        if session_id:
+            try:
+                session_obj = Session.objects.get(session_id=session_id)
+                refresh_token = session_obj.spotify_refresh_token
+            except Session.DoesNotExist:
+                pass
+        
+        # Fallback to Django session if no session_id or no token in database
         if not refresh_token:
-            return Response({"error": "No refresh_token in session"}, status=400)
+            session_data = request.session.get("spotify", {})
+            refresh_token = session_data.get("refresh_token")
+        
+        if not refresh_token:
+            return Response({"error": "No refresh_token available"}, status=400)
 
         try:
             cid = settings.SPOTIFY_CLIENT_ID
@@ -472,15 +511,29 @@ class SpotifyRefreshTokenView(APIView):
             return Response({"error": f"Network error: {e}"}, status=500)
 
         if result.status_code != 200:
-            return Response({"error": "Refresh failed"}, status=r.status_code)
+            return Response({"error": "Refresh failed"}, status=result.status_code)
 
         try:
             new_tokens = result.json()
         except Exception:
             new_tokens = {}
 
+        # Update Django session
+        session_data = request.session.get("spotify", {})
         session_data.update(new_tokens)
         request.session["spotify"] = session_data
+
+        # Update Session model if we have a session object
+        if session_obj:
+            session_obj.spotify_access_token = new_tokens.get("access_token")
+            # Only update refresh token if a new one was provided
+            if "refresh_token" in new_tokens:
+                session_obj.spotify_refresh_token = new_tokens.get("refresh_token")
+            # Calculate expiry time
+            expires_in = new_tokens.get("expires_in", 3600)
+            from datetime import datetime, timedelta
+            session_obj.spotify_token_expires = datetime.now() + timedelta(seconds=expires_in)
+            session_obj.save()
 
         return Response({
             "success": True,
@@ -495,10 +548,20 @@ class SpotifyRefreshTokenView(APIView):
 class SpotifyDisconnectView(APIView):
     def post(self, request, *args, **kwargs):
         try:
-            # Clear Spotify tokens from session
-            if "spotify" in request.session:
-                del request.session["spotify"]
-                request.session.modified = True
+            session_id = request.data.get("session_id") or request.query_params.get("session_id")
+            if not session_id:
+                return Response({"error": "session_id required"}, status=400)
+                
+            # Clear Spotify tokens from Session model
+            try:
+                session = Session.objects.get(session_id=session_id)
+                session.spotify_access_token = None
+                session.spotify_refresh_token = None
+                session.spotify_token_expires = None
+                session.spotify_user_id = None
+                session.save()
+            except Session.DoesNotExist:
+                return Response({"error": "invalid session_id"}, status=400)
             
             return Response({
                 "success": True,

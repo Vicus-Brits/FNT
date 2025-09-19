@@ -5,6 +5,12 @@ class Session(models.Model):
     created_date = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
     
+    # Spotify token fields
+    spotify_access_token = models.TextField(null=True, blank=True)
+    spotify_refresh_token = models.TextField(null=True, blank=True)
+    spotify_token_expires = models.DateTimeField(null=True, blank=True)
+    spotify_user_id = models.CharField(max_length=255, null=True, blank=True)
+    
     def __str__(self):
         return self.session_id
     
