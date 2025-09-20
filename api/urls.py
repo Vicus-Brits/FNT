@@ -9,7 +9,7 @@ from .views import (
     # Playlist/Vibe management views
     AddPlaylistVibeView, GetSongsView, OrderPlaylistView, OrderVibeView,
     RemoveListView, ClearVibeView, RecommendView, AddRecommendationsView,
-    AddSongView, ClearSessionSongsView
+    AddSongView, ClearSessionSongsView, NextSongView
 )
 
 
@@ -33,7 +33,8 @@ class APIRootView(APIView):
                     "clear_vibe": "/api/clear-vibe/ (POST)",
                     "clear_session_songs": "/api/clear-session-songs/ (POST)",
                     "get": "/api/recommend/ (GET)",
-                    "add": "/api/add-recommendations/ (POST)"
+                    "add": "/api/add-recommendations/ (POST)",
+                    "next_song": "/api/next-song/ (POST)"
                 }
             
         })
@@ -69,4 +70,7 @@ urlpatterns = [
     # Recommendations
     path('recommend/', RecommendView.as_view(), name='recommend'),
     path('add-recommendations/', AddRecommendationsView.as_view(), name='add_recommendations'),
+    
+    # Next song functionality 
+    path('next-song/', NextSongView.as_view(), name='next_song'),
 ]

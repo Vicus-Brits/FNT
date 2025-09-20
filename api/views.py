@@ -1,7 +1,7 @@
 import random
 import base64
 import requests
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from django.db import models
 from django.conf import settings
 from django.http import HttpResponseRedirect
@@ -2337,3 +2337,180 @@ class SpotifyRefreshTokenView(APIView):
             "token_type": new_tokens.get("token_type", ""),
             "expires_in": new_tokens.get("expires_in", 0)
         }, status=200)
+
+
+class NextSongView(APIView):
+    """
+    Play the next song from the playlist:
+    1. Get the #1 song from the playlist (lowest playlist_sequence)
+    2. Play the song via Spotify API
+    3. Move the song to playlist history 
+    4. Remove it from active playlist
+    """
+    
+    def post(self, request, *args, **kwargs):
+        session_id = request.data.get("session_id")
+        
+        # Debug logging
+        print(f"NextSongView: Received session_id: {session_id}")
+        
+        valid, error_response = validate_session(session_id)
+        if not valid:
+            print(f"NextSongView: Session validation failed")
+            return error_response
+            
+        try:
+            session = Session.objects.get(session_id=session_id)
+            print(f"NextSongView: Found session: {session}")
+            
+            # Get the first song in the playlist (lowest playlist_sequence, excluding 0)
+            first_song = Song.objects.filter(
+                session=session,
+                playlist_sequence__gt=0
+            ).order_by('playlist_sequence').first()
+            
+            print(f"NextSongView: Found first song: {first_song}")
+            
+            if not first_song:
+                print(f"NextSongView: No songs in playlist for session {session_id}")
+                return Response({
+                    "error": "No songs in playlist",
+                    "message": "Add some songs to your playlist first"
+                }, status=400)
+            
+            # Search for the song on Spotify to get the track ID
+            spotify_track_id = self._search_track_on_spotify(session, first_song.song_title, first_song.artist_name)
+            
+            if not spotify_track_id:
+                return Response({
+                    "error": "Song not found on Spotify",
+                    "message": f"Could not find '{first_song.song_title}' by '{first_song.artist_name}' on Spotify"
+                }, status=400)
+            
+            # Build Spotify track URI with the found track ID
+            track_uri = f"spotify:track:{spotify_track_id}"
+            print(f"NextSongView: Built track URI: {track_uri}")
+            
+            # Call Spotify API to play the track
+            spotify_response = self._play_track_on_spotify(session, track_uri)
+            print(f"NextSongView: Spotify response: {spotify_response}")
+            
+            if spotify_response.get('error'):
+                return Response({
+                    "error": "Failed to play song on Spotify",
+                    "details": spotify_response['error']
+                }, status=400)
+            
+            # Move song to history - find the highest hist_sequence and add 1
+            max_hist_seq = Song.objects.filter(
+                session=session,
+                playlist_hist_sequence__isnull=False
+            ).aggregate(models.Max('playlist_hist_sequence'))['playlist_hist_sequence__max'] or 0
+            
+            # Update the song
+            first_song.playlist_hist_sequence = max_hist_seq + 1
+            first_song.is_played = True
+            first_song.is_playing = True
+            
+            # Remove from active playlist
+            removed_sequence = first_song.playlist_sequence
+            first_song.playlist_sequence = 0  # 0 means not in active playlist
+            first_song.save()
+            
+            # Reorder remaining playlist songs
+            remaining_songs = Song.objects.filter(
+                session=session,
+                playlist_sequence__gt=removed_sequence
+            ).order_by('playlist_sequence')
+            
+            reordered_count = 0
+            for song in remaining_songs:
+                song.playlist_sequence -= 1
+                song.save()
+                reordered_count += 1
+            
+            # Mark other songs as not currently playing
+            Song.objects.filter(
+                session=session,
+                is_playing=True
+            ).exclude(id=first_song.id).update(is_playing=False)
+            
+            return Response({
+                "success": True,
+                "message": f"Now playing: {first_song.song_title} by {first_song.artist_name}",
+                "song": {
+                    "id": first_song.id,
+                    "title": first_song.song_title,
+                    "artist": first_song.artist_name,
+                    "song_id": first_song.song_id
+                },
+                "playlist_reordered": reordered_count,
+                "spotify_response": spotify_response
+            }, status=200)
+            
+        except Exception as e:
+            return Response({
+                "error": f"Failed to play next song: {str(e)}"
+            }, status=500)
+    
+    def _play_track_on_spotify(self, session, track_uri):
+        """Helper method to play track on Spotify"""
+        if not session.spotify_access_token:
+            return {"error": "No Spotify access token"}
+        
+        headers = {"Authorization": f"Bearer {session.spotify_access_token}"}
+        url = "https://api.spotify.com/v1/me/player/play"
+        payload = {"uris": [track_uri]}
+        
+        try:
+            response = requests.put(url, json=payload, headers=headers, timeout=15)
+            
+            if response.status_code == 204:
+                return {"success": True, "message": "Track started successfully"}
+            elif response.status_code == 200:
+                return {"success": True, "message": "Track started successfully"}
+            else:
+                try:
+                    error_data = response.json()
+                    return {"error": error_data.get("error", {}).get("message", f"HTTP {response.status_code}")}
+                except:
+                    return {"error": f"HTTP {response.status_code}: {response.text}"}
+                    
+        except Exception as e:
+            return {"error": f"Network error: {str(e)}"}
+    
+    def _search_track_on_spotify(self, session, song_title, artist_name):
+        """Helper method to search for a track on Spotify and get its ID"""
+        if not session.spotify_access_token:
+            return None
+        
+        headers = {"Authorization": f"Bearer {session.spotify_access_token}"}
+        
+        # Clean up the search query - remove special characters and extra spaces
+        query = f"track:{song_title} artist:{artist_name}"
+        query = query.replace('"', '').replace("'", "").strip()
+        
+        url = f"https://api.spotify.com/v1/search?q={quote(query)}&type=track&limit=1"
+        
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                tracks = data.get('tracks', {}).get('items', [])
+                
+                if tracks:
+                    track_id = tracks[0]['id']
+                    print(f"Found Spotify track: {tracks[0]['name']} by {tracks[0]['artists'][0]['name']} (ID: {track_id})")
+                    return track_id
+                else:
+                    print(f"No Spotify tracks found for: {song_title} by {artist_name}")
+                    return None
+                    
+            else:
+                print(f"Spotify search failed: HTTP {response.status_code}")
+                return None
+                
+        except Exception as e:
+            print(f"Error searching Spotify: {str(e)}")
+            return None

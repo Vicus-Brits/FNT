@@ -1,5 +1,12 @@
+// AUTO-PLAY FEATURE
+let lastAutoPlayTrackId = null;
+let autoPlayInterval = null; // timer for checking playback
+let lastKnownTrack = null; // remember last song
+let autoPlayEnabled = false; // auto-play on/of
+let autoPlayInProgress = false; // stops double-triggering
+
 // HELPERS
-// Spotify button state based on connection status
+// Spotify button state
 function updateSpotifyButtonState(state) {
   const button = document.getElementById("startSpotifyBtn");
   const description = document.querySelector(
@@ -71,6 +78,7 @@ async function makeSpotifyRequest(url, options = {}) {
 
 // SPOTIFY INTEGRATION
 async function startSpotifyAuth() {
+  // disconnect if connected
   if (spotifyConnected) {
     await disconnectSpotify();
     return;
@@ -121,7 +129,7 @@ async function startSpotifyAuth() {
       throw new Error("No authorization URL received");
     }
   } catch (error) {
-    console.error("Error starting Spotify auth:", error);
+    console.error("Error:", error);
 
     const statusDiv = document.getElementById("spotifyStatus");
     showError(statusDiv, `Error: ${error.message}`);
@@ -135,12 +143,8 @@ async function disconnectSpotify() {
     updateSpotifyButtonState("connecting");
 
     const statusDiv = document.getElementById("spotifyStatus");
+    const controlsDiv = document.getElementById("spotifyControls");
     showSpinner(statusDiv, "Disconnecting from Spotify...");
-
-    // Check if we have a session
-    if (!currentSessionId) {
-      throw new Error("No active session");
-    }
 
     // clear tokens
     const response = await fetch("/spotify/disconnect/", {
@@ -155,10 +159,18 @@ async function disconnectSpotify() {
     spotifyConnected = false;
     updateSpotifyButtonState("disconnected");
 
+    // hide control buttons
+    if (controlsDiv) {
+      controlsDiv.style.display = "none";
+    }
+
     // Clear status
     if (statusDiv) {
       statusDiv.innerHTML = "";
     }
+
+    // Stop auto-play when disconnecting
+    stopAutoPlay();
 
     console.log("Disconnected");
   } catch (error) {
@@ -167,9 +179,18 @@ async function disconnectSpotify() {
     spotifyConnected = false;
     updateSpotifyButtonState("disconnected");
 
+    const controlsDiv = document.getElementById("spotifyControls");
+    // Hide control buttons on error too
+    if (controlsDiv) {
+      controlsDiv.style.display = "none";
+    }
+
+    // Stop auto-play on disconnect error
+    stopAutoPlay();
+
     const statusDiv = document.getElementById("spotifyStatus");
     if (statusDiv) {
-      showError(statusDiv, `Disconnect failed: ${error.message}`);
+      showError(statusDiv, `Error: ${error.message}`);
     }
   }
 }
@@ -354,8 +375,14 @@ async function getSpotifyDevices() {
 // Display user info and active device when connected
 async function displaySpotifyUserInfo() {
   const statusDiv = document.getElementById("spotifyStatus");
+  const controlsDiv = document.getElementById("spotifyControls");
 
   try {
+    // Show control buttons when connected
+    if (controlsDiv) {
+      controlsDiv.style.display = "block";
+    }
+
     // Show loading state
     showSpinner(statusDiv, "Loading user information...");
 
@@ -427,16 +454,6 @@ async function displaySpotifyUserInfo() {
                   <p class="mb-3 text-muted">
                     <strong>Album:</strong> ${album}
                   </p>
-                  
-                  <div class="mb-2">
-                    <div class="d-flex justify-content-between align-items-center mb-1">
-                      <small class="text-muted">${formatTime(progress)}</small>
-                      <small class="text-muted">${formatTime(duration)}</small>
-                    </div>
-                    <div class="progress" style="height: 6px;">
-                      <div class="progress-bar bg-spotify" role="progressbar" style="width: ${progressPercent}%"></div>
-                    </div>
-                  </div>
                 </div>
               </div>
             </div>
@@ -502,6 +519,9 @@ async function displaySpotifyUserInfo() {
     userInfoHtml += "</div>";
 
     statusDiv.innerHTML = userInfoHtml;
+
+    // Start auto-play monitoring when user info is displayed
+    startAutoPlay();
   } catch (error) {
     console.error("Error displaying user info:", error);
     statusDiv.innerHTML = `
@@ -515,13 +535,6 @@ async function displaySpotifyUserInfo() {
 // Check if user is already connected to Spotify (for page refresh)
 async function checkSpotifyConnection() {
   try {
-    // Don't check connection if we don't have a session
-    if (!currentSessionId) {
-      spotifyConnected = false;
-      updateSpotifyButtonState("disconnected");
-      return false;
-    }
-
     const response = await fetch(
       `/spotify/user-profile/?session_id=${currentSessionId}`,
       {
@@ -538,6 +551,12 @@ async function checkSpotifyConnection() {
       spotifyConnected = true;
       updateSpotifyButtonState("connected");
 
+      // Show control buttons when connected
+      const controlsDiv = document.getElementById("spotifyControls");
+      if (controlsDiv) {
+        controlsDiv.style.display = "block";
+      }
+
       // If we're on the spotify section, show user info
       if (currentPage === "spotify-section") {
         displaySpotifyUserInfo();
@@ -548,12 +567,31 @@ async function checkSpotifyConnection() {
       // User is not connected
       spotifyConnected = false;
       updateSpotifyButtonState("disconnected");
+
+      // Hide control buttons when not connected
+      const controlsDiv = document.getElementById("spotifyControls");
+      if (controlsDiv) {
+        controlsDiv.style.display = "none";
+      }
+
+      // Stop auto-play when not connected
+      stopAutoPlay();
+
       return false;
     }
   } catch (error) {
     // Error means not connected
     spotifyConnected = false;
     updateSpotifyButtonState("disconnected");
+
+    // Hide control buttons on error
+    const controlsDiv = document.getElementById("spotifyControls");
+    if (controlsDiv) {
+      controlsDiv.style.display = "none";
+    }
+
+    stopAutoPlay();
+
     return false;
   }
 }
@@ -565,22 +603,26 @@ function checkSpotifyCallback() {
   const error = urlParams.get("error");
 
   if (spotifyStatus === "connected") {
-    const statusDiv = document.getElementById("spotifyStatus");
+    const controlsDiv = document.getElementById("spotifyControls");
 
-    // Mark as connected
+    // set connected
     spotifyConnected = true;
-
-    // Update button state to reflect connection
     updateSpotifyButtonState("connected");
 
-    // Clean up URL parameters
+    // Show control buttons
+    if (controlsDiv) {
+      controlsDiv.style.display = "block";
+    }
+
+    // Clean up URL
     window.history.replaceState({}, document.title, window.location.pathname);
 
-    // Redirect to Spotify section after successful connection
     navigate("spotify-section");
 
-    // Display user info and active device
+    // user info and active device
     displaySpotifyUserInfo();
+
+    // handle error
   } else if (error) {
     const statusDiv = document.getElementById("spotifyStatus");
     const errorMessage = `Error: ${error}`;
@@ -606,3 +648,383 @@ function checkSpotifyCallback() {
 document.addEventListener("DOMContentLoaded", function () {
   // This is handled in the main DOMContentLoaded listener above
 });
+
+async function playNextSong() {
+  const nextBtn = document.getElementById("nextBtn");
+  if (!nextBtn) return;
+  const originalContent = nextBtn.innerHTML;
+
+  try {
+    // load spinner
+    nextBtn.disabled = true;
+    nextBtn.innerHTML =
+      '<i class="fas fa-spinner fa-spin"></i> <span class="d-none d-sm-inline ms-1">Playing...</span>';
+
+    // call our API to move to the next song
+    const response = await fetch("/api/next-song/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": getCSRFToken(),
+      },
+      body: JSON.stringify({
+        session_id: currentSessionId,
+      }),
+    });
+
+    const data = await response.json();
+
+    // lets hope that worked and update the UI
+    if (response.ok && data.success) {
+      console.log("Next song playing:", data.message);
+
+      // refresh Spotify info
+      displaySpotifyUserInfo();
+
+      // success message song title and artist
+      const statusDiv = document.getElementById("spotifyStatus");
+      const successDiv = document.createElement("div");
+      successDiv.className = "alert alert-success mt-2";
+      successDiv.innerHTML = `<strong>Now Playing:</strong> ${data.song.title} by ${data.song.artist}`;
+      statusDiv.appendChild(successDiv);
+      // remove msg after 5 seconds
+      setTimeout(() => {
+        if (successDiv.parentNode)
+          successDiv.parentNode.removeChild(successDiv);
+      }, 5000);
+    } else {
+      // TODO: Handle case when spotify cannot find song
+      alert("Please press Next in the Spotify Player");
+      console.log("Error:", data);
+    }
+  } catch (e) {
+    alert("Please press Next in the Spotify Player");
+    console.log("playNextSong error:", e);
+  } finally {
+    // return button state
+    nextBtn.disabled = false;
+    nextBtn.innerHTML = originalContent;
+  }
+}
+
+// auto-play function for continious playback
+function startAutoPlay() {
+  // if running, return
+  if (autoPlayInterval || !spotifyConnected) {
+    return;
+  }
+
+  console.log("Starting auto-play...");
+  autoPlayEnabled = true;
+
+  // check for song end (2 sec interval)
+  autoPlayInterval = setInterval(checkForSongEnd, 2000);
+  setTimeout(checkForSongEnd, 1000);
+}
+
+// stop the auto-play feature
+function stopAutoPlay() {
+  // stop if running
+  if (autoPlayInterval) {
+    console.log("Stopping auto-play...");
+    clearInterval(autoPlayInterval); // stop timer
+    autoPlayInterval = null;
+    autoPlayEnabled = false;
+    lastKnownTrack = null;
+    autoPlayInProgress = false; // reset flag
+  }
+}
+
+//  if current song is near end -> play the next one
+async function checkForSongEnd() {
+  // checks
+  if (!autoPlayEnabled || !spotifyConnected || !currentSessionId) {
+    return;
+  }
+
+  try {
+    // get current playback info
+    const currentData = await getCurrentlyPlaying();
+    if (!currentData || !currentData.item) {
+      // If Spotify says nothing, play next
+      if (autoPlayEnabled && spotifyConnected && currentSessionId) {
+        await autoPlayNextSong();
+      }
+      return;
+    }
+
+    const currentTrack = currentData.item;
+    const progress = currentData.progress_ms || 0;
+    const duration = currentTrack.duration_ms || 0;
+    const isPlaying = currentData.is_playing;
+
+    // check if new track
+    const trackId = currentTrack.id;
+    const trackChanged = lastKnownTrack && lastKnownTrack.id !== trackId;
+
+    // set current track
+    lastKnownTrack = {
+      id: trackId,
+      name: currentTrack.name,
+      artists: currentTrack.artists?.map((a) => a.name).join(", ") || "Unknown",
+      progress: progress,
+      duration: duration,
+    };
+
+    if (trackChanged) {
+      lastAutoPlayTrackId = null; // clear debounce so new song is immediately eligible
+      return;
+    }
+
+    const timeRemaining = duration - progress;
+    const isNearEnd = timeRemaining <= 3000;
+    const isVeryNearEnd = timeRemaining <= 1500;
+    if (
+      currentData.is_playing &&
+      isVeryNearEnd &&
+      lastAutoPlayTrackId !== trackId
+    ) {
+      lastAutoPlayTrackId = trackId; // one trigger per track
+      await autoPlayNextSong(trackId); // pass previous track id
+      return;
+    }
+
+    // if ending and still playing -> next song
+    if (isVeryNearEnd && isPlaying) {
+      await autoPlayNextSong();
+      return;
+    }
+
+    // if close to end and playing -> next song
+    if (isNearEnd && isPlaying) {
+      const waitTime = Math.max(timeRemaining - 500, 500); // wait until ~500ms before end
+      setTimeout(async () => {
+        if (!autoPlayEnabled || !spotifyConnected) return;
+        await autoPlayNextSong();
+      }, waitTime);
+    }
+  } catch (e) {
+    // TODO: consider how we get here and handle
+    console.error("Consider how we get here and handle:", e);
+    return;
+  }
+}
+
+async function ensureNextIsPlaying(prevTrackId) {
+  for (let i = 0; i < 4; i++) {
+    const cur = await getCurrentlyPlaying();
+    if (cur && cur.item) {
+      const sameTrack = prevTrackId && cur.item.id === prevTrackId;
+      if (!sameTrack && cur.is_playing) return true; // success
+      if (!sameTrack && !cur.is_playing) {
+        try {
+          const stateResp = await makeSpotifyRequest(
+            "/spotify/playback-state/"
+          );
+          const stateData = await stateResp.json();
+          const deviceId = stateData?.device?.id;
+          const playUrl =
+            "/spotify/play/" + (deviceId ? `?device_id=${deviceId}` : "");
+
+          await makeSpotifyRequest(playUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-CSRFToken": getCSRFToken(),
+            },
+          });
+        } catch (e) {}
+      }
+    }
+    await waitMs(500);
+  }
+  return false;
+}
+
+function waitMs(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+async function autoPlayNextSong(prevTrackId) {
+  if (!autoPlayEnabled || !spotifyConnected || !currentSessionId) return;
+  if (autoPlayInProgress) return;
+  autoPlayInProgress = true;
+  try {
+    setRepeatOff(); // best effort
+    const response = await fetch("/api/next-song/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": getCSRFToken(),
+      },
+      body: JSON.stringify({ session_id: currentSessionId }),
+    });
+    const data = await response.json();
+    if (response.ok && data && data.success) {
+      await waitMs(700); // gap to ensure updates have time
+      const ok = await ensureNextIsPlaying(prevTrackId);
+      if (!ok) {
+        // start playback if stalled
+        try {
+          const stateResp = await makeSpotifyRequest(
+            "/spotify/playback-state/"
+          );
+          const stateData = await stateResp.json();
+          const deviceId = stateData?.device?.id;
+          const playUrl =
+            "/spotify/play/" + (deviceId ? `?device_id=${deviceId}` : "");
+
+          await makeSpotifyRequest(playUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-CSRFToken": getCSRFToken(),
+            },
+          });
+        } catch (e) {}
+      }
+      // refresh screen
+      setTimeout(() => displaySpotifyUserInfo(), 1200);
+    } else {
+      if (data && data.error && data.error.includes("No songs in playlist")) {
+        stopAutoPlay();
+      }
+    }
+  } finally {
+    autoPlayInProgress = false;
+  }
+}
+
+// if connected to spotify start auto-play
+function enableAutoPlayOnConnection() {
+  if (spotifyConnected && currentPage === "spotify-section") {
+    startAutoPlay();
+  }
+}
+
+// pause player
+async function pauseSpotifyPlayback() {
+  const pauseBtn = document.getElementById("pauseBtn");
+  const originalContent = pauseBtn.innerHTML;
+
+  try {
+    if (!spotifyConnected) {
+      alert("Please connect to Spotify first.");
+      return;
+    }
+
+    // show that the button is busy
+    pauseBtn.disabled = true;
+    pauseBtn.innerHTML =
+      '<i class="fas fa-spinner fa-spin"></i> <span class="d-none d-sm-inline ms-1">Pausing...</span>';
+
+    // call pause api
+    const response = await makeSpotifyRequest("/spotify/pause/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": getCSRFToken(),
+      },
+    });
+
+    const data = await response.json();
+
+    console.log("Paused playback");
+
+    // update the UI so it shows the paused state
+    displaySpotifyUserInfo();
+
+    // user  pop up message
+    const statusDiv = document.getElementById("spotifyStatus");
+    if (statusDiv) {
+      const pauseDiv = document.createElement("div");
+      pauseDiv.className = "alert alert-secondary mt-2";
+      pauseDiv.innerHTML = `<i class="fas fa-pause me-1"></i> Playback paused`;
+      statusDiv.appendChild(pauseDiv);
+      setTimeout(() => {
+        if (pauseDiv.parentNode) pauseDiv.parentNode.removeChild(pauseDiv);
+      }, 3000);
+    }
+  } catch (e) {
+    alert("Something went wrong while pausing.");
+  } finally {
+    // reset button
+    pauseBtn.disabled = false;
+    pauseBtn.innerHTML = originalContent;
+  }
+}
+async function playSpotifyPlayback() {
+  const playBtn = document.getElementById("playBtn");
+  if (!playBtn) return; // if the button doesn't exist, just stop
+  const originalContent = playBtn.innerHTML;
+
+  try {
+    if (!spotifyConnected) {
+      alert("Please connect to Spotify first.");
+      return;
+    }
+
+    // if playing, do nothing
+    const currentState = await getCurrentlyPlaying();
+    if (currentState && currentState.is_playing) {
+      console.log("Already playing, ignoring play button press");
+      return;
+    }
+
+    // button busy
+    playBtn.disabled = true;
+    playBtn.innerHTML =
+      '<i class="fas fa-spinner fa-spin"></i> <span class="d-none d-sm-inline ms-1">Playing...</span>';
+
+    // call play api
+    const response = await makeSpotifyRequest("/spotify/play/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": getCSRFToken(),
+      },
+    });
+
+    const data = await response.json();
+
+    console.log("Playback started");
+
+    // update screens
+    displaySpotifyUserInfo();
+
+    // user pop up message
+    const statusDiv = document.getElementById("spotifyStatus");
+    if (statusDiv) {
+      const playDiv = document.createElement("div");
+      playDiv.className = "alert alert-success mt-2";
+      playDiv.innerHTML = `<i class="fas fa-play me-1"></i> Playback resumed`;
+      statusDiv.appendChild(playDiv);
+
+      setTimeout(() => {
+        if (playDiv.parentNode) playDiv.parentNode.removeChild(playDiv);
+      }, 3000);
+    }
+  } catch (e) {
+    alert("Something went wrong.");
+  } finally {
+    // reset button
+    playBtn.disabled = false;
+    playBtn.innerHTML = originalContent;
+  }
+}
+
+// helper
+
+async function setRepeatOff() {
+  try {
+    await makeSpotifyRequest("/spotify/repeat-off/", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": getCSRFToken(),
+      },
+    });
+  } catch (e) {
+    /* TODO: Handle error */
+  }
+}

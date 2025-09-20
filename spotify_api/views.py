@@ -147,6 +147,7 @@ class SpotifyAPIRootView(APIView):
                 "play": request.build_absolute_uri("/spotify/play/"),
                 "pause": request.build_absolute_uri("/spotify/pause/"),
                 "next": request.build_absolute_uri("/spotify/next/"),
+                "repeat_off": request.build_absolute_uri("/spotify/repeat-off/"),
         }
         return Response({
             "SPOTIFY-API": API
@@ -307,6 +308,21 @@ class SpotifyNextTrackView(APIView):
             url += f"?device_id={device_id}"
 
         return callSpotifyAPI(url, headers, method="POST")
+
+
+# Turn off repeat mode: PUT /repeat-off
+class SpotifyRepeatOffView(APIView):
+    def put(self, request, *args, **kwargs):
+        headers = headerToken(request)
+        if not headers:
+            return Response({"error": "Not authenticated"}, status=401)
+
+        device_id = request.query_params.get("device_id")
+        url = "https://api.spotify.com/v1/me/player/repeat?state=off"
+        if device_id:
+            url += f"&device_id={device_id}"
+
+        return callSpotifyAPI(url, headers, method="PUT", empty204="Repeat mode turned off")
 
 
 # OAuth: GET /auth (returns auth URL)

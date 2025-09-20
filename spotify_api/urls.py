@@ -5,7 +5,7 @@ from .views import (
     SpotifyDevicesView, SpotifyCurrentlyPlayingView, SpotifyPlaybackStateView,
     SpotifyRecentTracksView, SpotifyUserProfileView, SpotifySearchTracksView,
     SpotifyPlayTrackView, SpotifyPlayView, SpotifyPauseView, SpotifyNextTrackView,
-    SpotifyDisconnectView
+    SpotifyRepeatOffView, SpotifyDisconnectView
 )
 
 # DRF router for viewsets (empty for now since we're using APIViews)
@@ -34,4 +34,5 @@ urlpatterns = [
     path('play/', SpotifyPlayView.as_view(), name='spotify_play'),
     path('pause/', SpotifyPauseView.as_view(), name='spotify_pause'),
     path('next/', SpotifyNextTrackView.as_view(), name='spotify_next_track'),
+    path('repeat-off/', SpotifyRepeatOffView.as_view(), name='spotify_repeat_off'),
 ]
